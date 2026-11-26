@@ -5,7 +5,7 @@
     python3 tools/arginf.py new [--import Mathlib] "<Lean Prop>"
     python3 tools/arginf.py check [--base upstream/main] # same checks as CI
     python3 tools/arginf.py check-all                    # every folder (main runs this)
-    python3 tools/arginf.py kernel [Theorems.«<hash>»]   # kernel re-check after lake build
+    python3 tools/arginf.py kernel [<hash> ...]          # kernel re-check after lake build
     python3 tools/arginf.py index > index.json
 
 Each theorem lives in Theorems/<hash>/. The hash is the first 12 hex digits of
@@ -404,20 +404,52 @@ def forbidden_axioms(axioms: list[str]) -> list[str]:
     return [a for a in axioms if a not in ALLOWED_AXIOMS]
 
 
+def theorem_modules(root: Path, hashes: list[str] | None = None) -> list[str]:
+    """Statement and attempt modules, statements first, for these folders (default: all)."""
+    base = root / ROOT_DIR
+    folders = (
+        sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name))
+        if base.is_dir()
+        else []
+    )
+    if hashes is not None:
+        folders = [f for f in folders if f.name in set(hashes)]
+    mods: list[str] = []
+    for f in folders:
+        if (f / "Statement.lean").is_file():
+            mods.append(f"{ROOT_DIR}.«{f.name}».Statement")
+        adir = f / ATTEMPT_DIR
+        if adir.is_dir():
+            mods += [
+                f"{ROOT_DIR}.«{f.name}».{ATTEMPT_DIR}.«{a.name}».Attempt"
+                for a in sorted(adir.iterdir())
+                if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
+            ]
+    return mods
+
+
 def kernel_check(root: Path, modules: list[str], env: dict[str, str] | None = None) -> list[str]:
-    """Replay every declaration of these modules (and their submodules) in the Lean kernel.
+    """Replay every declaration of each module in the Lean kernel, one process per module.
 
     `leanchecker` ships with the toolchain. It loads .olean files without running their
     initializers, so it catches declarations that reached the environment without passing the
-    kernel. Run it after building and before trusting `#print axioms`."""
-    cmd = ["leanchecker", *modules] if env is not None else ["lake", "env", "leanchecker", *modules]
-    run = subprocess.run(
-        cmd, cwd=root, env=env, capture_output=True, text=True, timeout=3600, check=False
-    )
-    if run.returncode != 0:
-        out = (run.stdout + run.stderr).strip()[:2000]
-        return [f"kernel re-check failed for {', '.join(modules)}:\n{out}"]
-    return []
+    kernel. Run it after building and before trusting `#print axioms`. Each run imports the
+    module's dependencies (Mathlib) afresh, so modules are checked one at a time to bound
+    memory."""
+    if not modules:
+        return ["kernel re-check: no modules to check"]
+    errors: list[str] = []
+    for module in modules:
+        cmd = ["leanchecker", module]
+        if env is None:
+            cmd = ["lake", "env", *cmd]
+        run = subprocess.run(
+            cmd, cwd=root, env=env, capture_output=True, text=True, timeout=3600, check=False
+        )
+        if run.returncode != 0:
+            out = (run.stdout + run.stderr).strip()[:2000] or "(no output)"
+            errors.append(f"kernel re-check failed for {module} (exit {run.returncode}):\n{out}")
+    return errors
 
 
 def audit(root: Path, h: str, attempt: str) -> list[str]:
@@ -508,7 +540,7 @@ def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | No
         )
         if run.returncode != 0:
             return [f"{module}: {(run.stdout + run.stderr).strip()[:2000]}"]
-    kernel = kernel_check(root, [f"{ROOT_DIR}.«{h}»"], env)
+    kernel = kernel_check(root, [m for m, _ in plan if m.startswith(f"{ROOT_DIR}.«{h}».")], env)
     if kernel:
         return kernel
     # Every complete attempt in the folder is a proof, so all of them are audited.
@@ -642,7 +674,7 @@ def main(argv: list[str] | None = None) -> int:
     p_fast.add_argument("theorem")
     p_fast.add_argument("--attempt", default=None)
     p_kernel = sub.add_parser("kernel", help="replay modules in the kernel (after `lake build`)")
-    p_kernel.add_argument("modules", nargs="*", help=f"module prefixes (default: {ROOT_DIR})")
+    p_kernel.add_argument("hashes", nargs="*", help="statements to check (default: all)")
     sub.add_parser("check-all", help="folder, attempt and safety checks for every folder")
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="statements to audit (default: all)")
@@ -712,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"ok: {len(pairs)} proof(s) use only {sorted(ALLOWED_AXIOMS)}")
         elif args.cmd == "kernel":
-            errors = kernel_check(root, args.modules or [ROOT_DIR])
+            errors = kernel_check(root, theorem_modules(root, args.hashes or None))
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
             if errors:

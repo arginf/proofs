@@ -102,7 +102,7 @@ jobs:
         if: steps.fast.outputs.full == 'true'
         run: |
           # Replays every declaration in the kernel, so nothing reached the environment unchecked.
-          if [ -z "$HASH" ]; then python3 tools/arginf.py kernel; else python3 tools/arginf.py kernel "Theorems.«$HASH»"; fi
+          if [ -z "$HASH" ]; then python3 tools/arginf.py kernel; else python3 tools/arginf.py kernel "$HASH"; fi
       - name: Proof matches statement, allowed axioms only
         if: steps.fast.outputs.full == 'true'
         run: |

@@ -273,19 +273,39 @@ class WiredIntoChecks(unittest.TestCase):
         self.assertEqual(arginf.default_base(["origin", "upstream"]), "upstream/main")
         self.assertEqual(arginf.default_base(["origin"]), "origin/main")
 
-    def test_kernel_check_command(self) -> None:
+    def test_kernel_check_runs_one_module_at_a_time(self) -> None:
+        # One process per module: leanchecker imports Mathlib once per module, and doing them
+        # all in one process at once ran out of memory on CI.
         import subprocess
         from unittest import mock
 
         done = subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.object(arginf.subprocess, "run", return_value=done) as run:
-            self.assertEqual(arginf.kernel_check(Path("."), ["Theorems"]), [])
-            self.assertEqual(run.call_args.args[0], ["lake", "env", "leanchecker", "Theorems"])
-            arginf.kernel_check(Path("."), ["Theorems.«x»"], env={})
-            self.assertEqual(run.call_args.args[0], ["leanchecker", "Theorems.«x»"])
-        bad = subprocess.CompletedProcess([], 1, "", "leanchecker found a problem")
-        with mock.patch.object(arginf.subprocess, "run", return_value=bad):
-            self.assertTrue(arginf.kernel_check(Path("."), ["Theorems"]))
+            self.assertEqual(arginf.kernel_check(Path("."), ["M.A", "M.B"]), [])
+            self.assertEqual(
+                [c.args[0] for c in run.call_args_list],
+                [["lake", "env", "leanchecker", "M.A"], ["lake", "env", "leanchecker", "M.B"]],
+            )
+            run.reset_mock()
+            arginf.kernel_check(Path("."), ["M.A"], env={})
+            self.assertEqual(run.call_args.args[0], ["leanchecker", "M.A"])
+        killed = subprocess.CompletedProcess([], -9, "", "")
+        with mock.patch.object(arginf.subprocess, "run", return_value=killed):
+            errs = arginf.kernel_check(Path("."), ["M.A"])
+            self.assertTrue(errs)
+            self.assertIn("-9", errs[0])
+        self.assertTrue(arginf.kernel_check(Path("."), []))  # nothing to check is an error
+
+    def test_theorem_modules(self) -> None:
+        root = self.repo()
+        h = arginf.new_theorem(root, "True", ("Init",))
+        a = arginf.start_attempt(root, h, None)
+        mods = arginf.theorem_modules(root)
+        self.assertEqual(
+            mods, [f"Theorems.«{h}».Statement", f"Theorems.«{h}».attempts.«{a}».Attempt"]
+        )
+        self.assertEqual(arginf.theorem_modules(root, [h]), mods)
+        self.assertEqual(arginf.theorem_modules(root, ["ffffffffffff"]), [])
 
 
 if __name__ == "__main__":
