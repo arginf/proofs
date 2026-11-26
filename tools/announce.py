@@ -30,7 +30,7 @@ _WHAT = {"statement": "statement", "checkpoint": "checkpoint", "proof": "proof"}
 
 
 def statement_url(h: str) -> str:
-    return f"{SITE}/s/{h}"
+    return f"{SITE}/theorems/{h}"
 
 
 def queued_body(kind: str) -> str:
