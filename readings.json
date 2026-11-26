@@ -1,0 +1,50 @@
+[
+ {
+  "hash": "23a9ca539bfc",
+  "text": "For every function $f : \\{0,1\\}^* \\to \\{0,1\\}^*$, if $f$ is one-way, then $\\text{SAT} \\notin \\text{P}(\\text{encCNF})$.",
+  "model": "Qwen3-8B-Q4_K_M",
+  "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+  "runtime": "llama.cpp b12292",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "maxTokens": 512,
+  "truncated": false,
+  "promptSha256": "181fb7aa413bed3b4defc7a90a2c764ed4fe84149a7840b15600ca35a201b0d8",
+  "seconds": 18.8
+ },
+ {
+  "hash": "bdb47f9dc719",
+  "text": "For every $n \\in \\mathbb{N}$, we have $n + 0 = n$.",
+  "model": "Qwen3-8B-Q4_K_M",
+  "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+  "runtime": "llama.cpp b12292",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "maxTokens": 512,
+  "truncated": false,
+  "promptSha256": "b78f93ae7a78247328542379be11da4545ea9140d5838f159039b4e897c50f35",
+  "seconds": 13.1
+ },
+ {
+  "hash": "c72a0c096b0a",
+  "text": "For every function $f : \\{0,1\\}^* \\to \\{0,1\\}^*$, if $f$ is a one-way function, then there exists a function $g : \\{0,1\\}^* \\to \\{0,1\\}^*$ such that $g$ is a pseudorandom generator with seed length $n \\mapsto n + 1$.",
+  "model": "Qwen3-8B-Q4_K_M",
+  "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+  "runtime": "llama.cpp b12292",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "maxTokens": 512,
+  "truncated": false,
+  "promptSha256": "acbde74c24f99dd627368036fdd3da284b31c1271fa3f247ce53ef6bdae4e890",
+  "seconds": 22.7
+ },
+ {
+  "hash": "ccea3a5ebd7d",
+  "text": "If the SAT problem is not in P with respect to the encCNF encoding, then there exists a function $ f : \\{0,1\\}^* \\to \\{0,1\\}^* $ that is one-way.",
+  "model": "Qwen3-8B-Q4_K_M",
+  "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+  "runtime": "llama.cpp b12292",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "maxTokens": 512,
+  "truncated": false,
+  "promptSha256": "aa8f31bac1e54b8b6da76e7568abe54ed163503947203dd3c8fb6fb43b4d5ca4",
+  "seconds": 17.2
+ }
+]

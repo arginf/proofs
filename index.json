@@ -1,0 +1,183 @@
+{
+ "version": 2,
+ "theorems": [
+  {
+   "hash": "23a9ca539bfc",
+   "statement": "∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWay.NP\n\nnamespace Theorems.«23a9ca539bfc»\n\ndef statement : Prop :=\n  ∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF\n\nend Theorems.«23a9ca539bfc»\n",
+   "status": "proved",
+   "proofs": [
+    "5d90c2692c3e"
+   ],
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "featured": false,
+   "example": false,
+   "attempts": [
+    {
+     "hash": "5d90c2692c3e",
+     "parent": null,
+     "openGoals": 0,
+     "complete": true,
+     "size": 110,
+     "children": [],
+     "lean": "import Theorems.«23a9ca539bfc».Statement\n\nnamespace Theorems.«23a9ca539bfc».Attempt_5d90c2692c3e\n\ntheorem proof : Theorems.«23a9ca539bfc».statement :=\n  fun _ hf => hf.SAT_notMem_P\n\nend Theorems.«23a9ca539bfc».Attempt_5d90c2692c3e\n",
+     "mergedAt": "2026-11-25T17:25:52-08:00",
+     "commit": "131f23216c661af06d8600e1e36bd0e1d5639252",
+     "pr": null,
+     "author": null,
+     "upvotes": 0
+    }
+   ],
+   "readings": [
+    {
+     "text": "For every function $f : \\{0,1\\}^* \\to \\{0,1\\}^*$, if $f$ is one-way, then $\\text{SAT} \\notin \\text{P}(\\text{encCNF})$.",
+     "model": "Qwen3-8B-Q4_K_M",
+     "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+     "runtime": "llama.cpp b12292",
+     "cpu": "AMD EPYC 9V45 96-Core Processor",
+     "promptSha256": "181fb7aa413bed3b4defc7a90a2c764ed4fe84149a7840b15600ca35a201b0d8",
+     "maxTokens": 512,
+     "truncated": false
+    }
+   ],
+   "firstProof": "5d90c2692c3e",
+   "shortestProof": "5d90c2692c3e",
+   "topProof": null
+  },
+  {
+   "hash": "bdb47f9dc719",
+   "statement": "∀ n : Nat, n + 0 = n",
+   "statementLean": "import Init\n\nnamespace Theorems.«bdb47f9dc719»\n\ndef statement : Prop :=\n  ∀ n : Nat, n + 0 = n\n\nend Theorems.«bdb47f9dc719»\n",
+   "status": "proved",
+   "proofs": [
+    "4261bc11c752",
+    "edea6db571ea"
+   ],
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "featured": false,
+   "example": true,
+   "attempts": [
+    {
+     "hash": "4261bc11c752",
+     "parent": null,
+     "openGoals": 0,
+     "complete": true,
+     "size": 99,
+     "children": [],
+     "lean": "import Theorems.«bdb47f9dc719».Statement\n\nnamespace Theorems.«bdb47f9dc719».Attempt_4261bc11c752\n\ntheorem proof : Theorems.«bdb47f9dc719».statement := by\n  intro n\n  simp\n\nend Theorems.«bdb47f9dc719».Attempt_4261bc11c752\n",
+     "mergedAt": "2026-11-26T03:25:47-08:00",
+     "commit": "d473bc02b45aa82511fdb363152975353f19ee1f",
+     "pr": 16,
+     "author": "adampdavis",
+     "upvotes": 0
+    },
+    {
+     "hash": "edea6db571ea",
+     "parent": null,
+     "openGoals": 0,
+     "complete": true,
+     "size": 106,
+     "children": [],
+     "lean": "import Theorems.«bdb47f9dc719».Statement\n\nnamespace Theorems.«bdb47f9dc719».Attempt_edea6db571ea\n\ntheorem proof : Theorems.«bdb47f9dc719».statement :=\n  fun n => Nat.add_zero n\n\nend Theorems.«bdb47f9dc719».Attempt_edea6db571ea\n",
+     "mergedAt": "2026-11-25T18:25:00-08:00",
+     "commit": "55b7111169a55486a4ea39ae42094d1e9cd66537",
+     "pr": 1,
+     "author": "adampdavis",
+     "upvotes": 1
+    }
+   ],
+   "readings": [
+    {
+     "text": "For every $n \\in \\mathbb{N}$, we have $n + 0 = n$.",
+     "model": "Qwen3-8B-Q4_K_M",
+     "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+     "runtime": "llama.cpp b12292",
+     "cpu": "AMD EPYC 9V45 96-Core Processor",
+     "promptSha256": "b78f93ae7a78247328542379be11da4545ea9140d5838f159039b4e897c50f35",
+     "maxTokens": 512,
+     "truncated": false
+    }
+   ],
+   "firstProof": "edea6db571ea",
+   "shortestProof": "4261bc11c752",
+   "topProof": "edea6db571ea"
+  },
+  {
+   "hash": "c72a0c096b0a",
+   "statement": "∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → ∃ g : List Bool → List Bool, Cslib.Crypto.PseudorandomGenerator g (fun n => n + 1)",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWayToPRG\n\nnamespace Theorems.«c72a0c096b0a»\n\ndef statement : Prop :=\n  ∀ f : List Bool → List Bool, Cslib.Crypto.OneWay f → ∃ g : List Bool → List Bool, Cslib.Crypto.PseudorandomGenerator g (fun n => n + 1)\n\nend Theorems.«c72a0c096b0a»\n",
+   "status": "proved",
+   "proofs": [
+    "bda14aeb9f48"
+   ],
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "featured": false,
+   "example": false,
+   "attempts": [
+    {
+     "hash": "bda14aeb9f48",
+     "parent": null,
+     "openGoals": 0,
+     "complete": true,
+     "size": 126,
+     "children": [],
+     "lean": "import Theorems.«c72a0c096b0a».Statement\n\nnamespace Theorems.«c72a0c096b0a».Attempt_bda14aeb9f48\n\ntheorem proof : Theorems.«c72a0c096b0a».statement :=\n  fun _ hf => hf.exists_pseudorandomGenerator\n\nend Theorems.«c72a0c096b0a».Attempt_bda14aeb9f48\n",
+     "mergedAt": "2026-11-25T17:25:52-08:00",
+     "commit": "131f23216c661af06d8600e1e36bd0e1d5639252",
+     "pr": null,
+     "author": null,
+     "upvotes": 0
+    }
+   ],
+   "readings": [
+    {
+     "text": "For every function $f : \\{0,1\\}^* \\to \\{0,1\\}^*$, if $f$ is a one-way function, then there exists a function $g : \\{0,1\\}^* \\to \\{0,1\\}^*$ such that $g$ is a pseudorandom generator with seed length $n \\mapsto n + 1$.",
+     "model": "Qwen3-8B-Q4_K_M",
+     "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+     "runtime": "llama.cpp b12292",
+     "cpu": "AMD EPYC 9V45 96-Core Processor",
+     "promptSha256": "acbde74c24f99dd627368036fdd3da284b31c1271fa3f247ce53ef6bdae4e890",
+     "maxTokens": 512,
+     "truncated": false
+    }
+   ],
+   "firstProof": "bda14aeb9f48",
+   "shortestProof": "bda14aeb9f48",
+   "topProof": null
+  },
+  {
+   "hash": "ccea3a5ebd7d",
+   "statement": "Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF → ∃ f : List Bool → List Bool, Cslib.Crypto.OneWay f",
+   "statementLean": "import CslibFrontier.Crypto.Computational.OneWay.NP\n\nnamespace Theorems.«ccea3a5ebd7d»\n\ndef statement : Prop :=\n  Cslib.Complexity.SAT ∉ Cslib.Complexity.P Cslib.Complexity.encCNF → ∃ f : List Bool → List Bool, Cslib.Crypto.OneWay f\n\nend Theorems.«ccea3a5ebd7d»\n",
+   "status": "open",
+   "proofs": [],
+   "dependencies": [],
+   "dependents": [],
+   "valid": true,
+   "featured": true,
+   "example": false,
+   "attempts": [],
+   "readings": [
+    {
+     "text": "If the SAT problem is not in P with respect to the encCNF encoding, then there exists a function $ f : \\{0,1\\}^* \\to \\{0,1\\}^* $ that is one-way.",
+     "model": "Qwen3-8B-Q4_K_M",
+     "modelSha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+     "runtime": "llama.cpp b12292",
+     "cpu": "AMD EPYC 9V45 96-Core Processor",
+     "promptSha256": "aa8f31bac1e54b8b6da76e7568abe54ed163503947203dd3c8fb6fb43b4d5ca4",
+     "maxTokens": 512,
+     "truncated": false
+    }
+   ],
+   "firstProof": null,
+   "shortestProof": null,
+   "topProof": null
+  }
+ ]
+}
