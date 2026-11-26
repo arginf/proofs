@@ -24,6 +24,7 @@ import sys
 import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 ROOT_DIR = "Theorems"
 HASH_LEN = 12
@@ -34,6 +35,22 @@ ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean"})
 ATTEMPT_DIR = "attempts"
 ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
 CURATION_FILE = "curation.toml"
+# English readings of statements, each labeled with the model that wrote it and a public chat
+# showing the full context. Prose, so they live outside Theorems/ and need maintainer review.
+TRANSLATION_DIR = "translations"
+SHARE_PREFIXES = {
+    "claude.ai": "/share/",
+    "chatgpt.com": "/share/",
+    "chat.openai.com": "/share/",
+    "gemini.google.com": "/share/",
+    "g.co": "/gemini/share/",
+    "grok.com": "/share/",
+}
+ARCHIVE_PREFIX = "https://web.archive.org/web/"
+READING_KEYS = frozenset({"model", "chat", "text", "archive"})
+READINGS_MAX = 10
+READING_TEXT_MAX = 1000
+_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}")
 CURATION_KEYS = ("featured", "examples")
 _STATEMENT_RE = re.compile(r"(?m)^def\s+statement\s*:\s*Prop\s*:=")
 _COMMAND_RE = re.compile(
@@ -111,11 +128,19 @@ def check_scope(changed: list[str], branch: str) -> list[str]:
     errors: list[str] = []
     folders: set[str] = set()
     attempts: set[str] = set()
+    translations: set[str] = set()
     for raw in changed:
         p = PurePosixPath(raw)
         parts = p.parts
         if ".." in parts or p.is_absolute():
             errors.append(f"{raw}: path tricks are not allowed")
+            continue
+        if len(parts) == 2 and parts[0] == TRANSLATION_DIR and parts[1].endswith(".toml"):
+            th = parts[1][: -len(".toml")]
+            if not HASH_RE.match(th):
+                errors.append(f"{raw}: translation files are named <hash>.toml")
+            else:
+                translations.add(th)
             continue
         if len(parts) < 3 or parts[0] != ROOT_DIR or not HASH_RE.match(parts[1]):
             errors.append(f"{raw}: outside a {ROOT_DIR}/<hash>/ folder")
@@ -130,6 +155,15 @@ def check_scope(changed: list[str], branch: str) -> list[str]:
                 errors.append(f"{raw}: only {', '.join(sorted(ATTEMPT_FILES))} are allowed")
         else:
             errors.append(f"{raw}: not an allowed file in {ROOT_DIR}/<hash>/")
+    if translations and folders:
+        errors.append("translations go in their own PR, separate from Lean changes")
+    if len(translations) > 1:
+        errors.append(f"a PR may add one translation file only, found {sorted(translations)}")
+    if len(translations) == 1 and not folders:
+        (th,) = translations
+        if not branch.startswith(f"{th}/"):
+            errors.append(f"branch must start with '{th}/' (got '{branch}')")
+        return errors
     if len(folders) > 1:
         errors.append(f"a PR may change one folder only, found {sorted(folders)}")
     if len(attempts) > 1:
@@ -228,6 +262,75 @@ def load_curation(root: Path) -> tuple[dict[str, list[str]], list[str]]:
                 errors.append(f"{CURATION_FILE}: {key} lists unknown statements {missing}")
             out[key] = list(value)
     return out, errors
+
+
+def _share_link_ok(url: str) -> bool:
+    u = urlsplit(url)
+    prefix = SHARE_PREFIXES.get(u.hostname or "")
+    return (
+        u.scheme == "https"
+        and prefix is not None
+        and u.path.startswith(prefix)
+        and len(u.path) > len(prefix)
+        and not u.username
+        and not u.port
+    )
+
+
+def _reading_errors(where: str, r: object) -> list[str]:
+    if not isinstance(r, dict):
+        return [f"{where}: each [[reading]] must be a table"]
+    errors: list[str] = []
+    unknown = set(r) - READING_KEYS
+    if unknown:
+        errors.append(f"{where}: unknown keys {sorted(unknown)}")
+    model, chat, text = r.get("model"), r.get("chat"), r.get("text")
+    if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
+        errors.append(f"{where}: model is required (the model that wrote the reading)")
+    if not isinstance(chat, str) or not _share_link_ok(chat):
+        errors.append(f"{where}: chat must be a public share link ({', '.join(SHARE_PREFIXES)})")
+    if not isinstance(text, str) or not text.strip() or len(text) > READING_TEXT_MAX:
+        errors.append(f"{where}: text must be 1-{READING_TEXT_MAX} characters")
+    elif re.search(r"[<>\n\r]|https?:|www\.", text):
+        errors.append(f"{where}: text must be plain prose (no links, markup or line breaks)")
+    archive = r.get("archive")
+    if archive is not None and (
+        not isinstance(archive, str) or not archive.startswith(ARCHIVE_PREFIX)
+    ):
+        errors.append(f"{where}: archive must be a {ARCHIVE_PREFIX} snapshot")
+    return errors
+
+
+def check_translation(root: Path, h: str) -> list[str]:
+    path = root / TRANSLATION_DIR / f"{h}.toml"
+    if not HASH_RE.match(h):
+        return [f"{path}: bad hash"]
+    if not (root / ROOT_DIR / h / "Statement.lean").is_file():
+        return [f"{path}: no statement {h}"]
+    try:
+        raw: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        return [f"{path}: {err}"]
+    errors: list[str] = []
+    if set(raw) - {"reading"}:
+        errors.append(f"{path}: only [[reading]] tables are allowed")
+    readings = raw.get("reading")
+    if not isinstance(readings, list) or not 1 <= len(readings) <= READINGS_MAX:
+        return errors + [f"{path}: needs 1-{READINGS_MAX} [[reading]] tables"]
+    for i, r in enumerate(readings):
+        errors += _reading_errors(f"{path} reading {i + 1}", r)
+    return errors
+
+
+def load_readings(root: Path, h: str) -> list[dict[str, Any]]:
+    path = root / TRANSLATION_DIR / f"{h}.toml"
+    if not path.is_file() or check_translation(root, h):
+        return []
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    return [
+        {"model": r["model"], "chat": r["chat"], "text": r["text"], "archive": r.get("archive")}
+        for r in raw["reading"]
+    ]
 
 
 # Attempts ("lines"): content-addressed, possibly partial, forming a tree -------
@@ -565,6 +668,7 @@ def build_index(root: Path) -> dict[str, Any]:
             "featured": folder.name in curation["featured"],
             "example": folder.name in curation["examples"],
             "attempts": _attempt_tree(folder),
+            "readings": load_readings(root, folder.name),
         }
     for h, e in entries.items():
         for d in e["dependencies"]:
@@ -630,6 +734,10 @@ def main(argv: list[str] | None = None) -> int:
                         att = root / ROOT_DIR / parts[1] / ATTEMPT_DIR / parts[3]
                         if att.is_dir():
                             errors += check_attempt(att)
+            for c in changed:
+                parts = PurePosixPath(c).parts
+                if len(parts) == 2 and parts[0] == TRANSLATION_DIR and parts[1].endswith(".toml"):
+                    errors += check_translation(root, parts[1][: -len(".toml")])
             if any(c == CURATION_FILE for c in changed):
                 errors += load_curation(root)[1]
             errors = list(dict.fromkeys(errors))

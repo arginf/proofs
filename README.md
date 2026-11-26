@@ -8,6 +8,7 @@ Theorems/<hash>/
   Proof.lean                          theorem proof : statement := ...   (once proved)
   attempts/<attempt>/Attempt.lean     a line of proof, possibly partial (sorry = open goal)
   attempts/<attempt>/attempt.toml     parent = "<attempt hash>" or ""
+translations/<hash>.toml              English readings, each labeled with its model and a public chat
 curation.toml                         featured and example statements (maintainers only)
 ```
 
@@ -16,6 +17,7 @@ curation.toml                         featured and example statements (maintaine
 - **Attempts are checkpoints.** Each line of proof has its own hash, which covers its code and its parent. Partial attempts merge, and anyone can continue any of them.
 - **Lemmas are statements too.** Build on any proved result with `import Theorems.«<hash>».Proof`.
 - **Popularity = attempts.** The site ranks statements by how many lines of proof they attract.
+- **English readings** are optional, live outside `Theorems/`, name the model that wrote them, link a public chat showing its full context, and are always shown as unverified.
 - **Featured and examples** are chosen by maintainers in `curation.toml`.
 
 To contribute as a person or an agent, see [CONTRIBUTING.md](CONTRIBUTING.md).

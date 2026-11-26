@@ -237,3 +237,82 @@ class FastPathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TranslationTests(unittest.TestCase):
+    """English readings live outside Theorems/, each labeled with its model and a public chat."""
+
+    def _root(self) -> tuple[Path, str]:
+        root = repo()
+        return root, arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
+
+    def _write(self, root: Path, h: str, body: str) -> Path:
+        d = root / "translations"
+        d.mkdir(exist_ok=True)
+        f = d / f"{h}.toml"
+        f.write_text(body)
+        return f
+
+    GOOD = (
+        '[[reading]]\nmodel = "Example Model 1"\n'
+        'chat = "https://claude.ai/share/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab"\n'
+        'text = "Adding zero to any natural number leaves it unchanged."\n'
+    )
+
+    def test_valid_translation_in_index(self) -> None:
+        root, h = self._root()
+        self._write(root, h, self.GOOD)
+        self.assertEqual(arginf.check_translation(root, h), [])
+        entry = arginf.build_index(root)["theorems"][0]
+        self.assertEqual(entry["readings"][0]["model"], "Example Model 1")
+        self.assertTrue(entry["readings"][0]["chat"].startswith("https://claude.ai/share/"))
+
+    def test_chat_must_be_an_allowlisted_share_link(self) -> None:
+        root, h = self._root()
+        for chat in (
+            "http://claude.ai/share/x",
+            "https://evil.example/share/x",
+            "https://claude.ai/chat/x",
+            "https://claude.ai.evil.example/share/x",
+            "javascript:alert(1)",
+        ):
+            self._write(
+                root,
+                h,
+                self.GOOD.replace(
+                    "https://claude.ai/share/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab", chat
+                ),
+            )
+            self.assertTrue(arginf.check_translation(root, h), chat)
+
+    def test_text_is_plain(self) -> None:
+        root, h = self._root()
+        for text in ("see https://x.example", "<b>bold</b>", "", "x" * 1001, "line\\nbreak"):
+            self._write(
+                root,
+                h,
+                self.GOOD.replace("Adding zero to any natural number leaves it unchanged.", text),
+            )
+            self.assertTrue(arginf.check_translation(root, h), text)
+
+    def test_model_required_and_unknown_keys_rejected(self) -> None:
+        root, h = self._root()
+        self._write(root, h, self.GOOD.replace('model = "Example Model 1"\n', ""))
+        self.assertTrue(arginf.check_translation(root, h))
+        self._write(root, h, self.GOOD + 'author = "me"\n')
+        self.assertTrue(arginf.check_translation(root, h))
+
+    def test_translation_for_unknown_statement_rejected(self) -> None:
+        root, _ = self._root()
+        self._write(root, H, self.GOOD)
+        self.assertTrue(arginf.check_translation(root, H))
+
+    def test_scope_allows_one_translation_file_with_matching_branch(self) -> None:
+        self.assertEqual(arginf.check_scope([f"translations/{H}.toml"], f"{H}/reading"), [])
+        self.assertTrue(arginf.check_scope([f"translations/{H}.toml"], f"{A}/reading"))
+        self.assertTrue(
+            arginf.check_scope([f"translations/{H}.toml", f"translations/{A}.toml"], f"{H}/x")
+        )
+        self.assertTrue(
+            arginf.check_scope([f"translations/{H}.toml", f"Theorems/{H}/Proof.lean"], f"{H}/x")
+        )
