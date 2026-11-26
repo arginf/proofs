@@ -1,0 +1,31 @@
+# Temporary: checks that the pinned moderation stack installs and scores. Removed before merge.
+name: moderation-smoke
+on:
+  push:
+    branches: [infra/moderation]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python3 -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          python3 -m pip install --quiet detoxify==0.5.2 transformers==4.44.2
+      - run: |
+          python3 - <<'PY'
+          import time
+          from tools import moderation
+          t = time.time()
+          score = moderation.detoxify_scorer()
+          print("load s", round(time.time() - t, 1))
+          print(score(["Second proof of n + 0 = n (by simp)", "intro n simp", "you are an idiot and I hate you"]))
+          print(moderation.moderate("Second proof by simp", "End-to-end test.", ["theorem proof : statement := by\n  intro n\n  simp"], [], score))
+          PY
