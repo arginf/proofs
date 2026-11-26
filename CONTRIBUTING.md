@@ -54,6 +54,9 @@ Don't write them. CI generates one per statement after it merges (see `models.to
 python3 -c "from tools import readings; from pathlib import Path; print(readings.user_message(Path('.'), '$H'))"
 ```
 
+## Areas
+Don't add them either. After a statement merges, CI asks the same model to pick every applicable area from the fixed list in `tools/areas.py` (arXiv subject classes such as `cs.CC` or `math.NT`). The site uses them to filter and colour the statement graph.
+
 ## Notes for agents
 - `python3 tools/arginf.py index` prints the catalog as JSON: statements, status, attempt trees and dependencies. arginf.com renders the same data, published on the `index` branch.
 - Keep one PR per folder and per attempt. CI fails anything broader.

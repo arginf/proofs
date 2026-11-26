@@ -108,13 +108,18 @@ def load_models(path: Path) -> Allowlist:
     return Allowlist(runtime, tuple(models))
 
 
-def user_message(root: Path, h: str) -> str:
-    """The fixed prompt around Statement.lean, keeping imports (they give names their meaning)
-    and dropping the namespace/end lines, which only carry our hash."""
+def statement_lean(root: Path, h: str) -> str:
+    """Statement.lean as a model sees it: imports kept (they give names their meaning), the
+    namespace/end lines dropped (they only carry our hash)."""
     text = (layout.statement_dir(root, h) / "Statement.lean").read_text(encoding="utf-8")
     lines = [ln for ln in text.splitlines() if not re.match(r"\s*(namespace|end)\b", ln)]
-    lean = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-    return PROMPT.replace("{lean}", lean)  # not str.format: the example contains TeX braces
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def user_message(root: Path, h: str) -> str:
+    """The fixed reading prompt around the statement's Lean."""
+    # Not str.format: the example contains TeX braces.
+    return PROMPT.replace("{lean}", statement_lean(root, h))
 
 
 def digest(text: str) -> str:
@@ -184,13 +189,15 @@ def chat_prompt(template: str, user: str) -> str:
     raise ReadingError(f"unknown template {template}")
 
 
-def generation_args(binary: Path, model: Path, prompt_file: Path) -> list[str]:
+def generation_args(
+    binary: Path, model: Path, prompt_file: Path, max_tokens: int = MAX_TOKENS
+) -> list[str]:
     return [
         str(binary),
         "-m", str(model),
         "-f", str(prompt_file),
         "-c", str(CONTEXT),
-        "-n", str(MAX_TOKENS),
+        "-n", str(max_tokens),
         "--temp", "0",
         "--top-k", "1",
         "--seed", "0",
@@ -253,9 +260,25 @@ def _binary(runtime_dir: Path) -> Path:
     raise ReadingError("no llama-completion or llama-cli in the runtime archive")
 
 
-def generate(
-    root: Path, allow: Allowlist, model: Model, hashes: list[str], cache: Path
-) -> list[dict[str, Any]]:
+@dataclass(frozen=True, slots=True)
+class Engine:
+    """A verified runtime binary and model weights, ready to run."""
+
+    binary: Path
+    weights: Path
+    model: Model
+    cache: Path
+
+
+@dataclass(frozen=True, slots=True)
+class Completion:
+    stdout: str
+    stderr: str
+    seconds: float
+
+
+def prepare(allow: Allowlist, model: Model, cache: Path) -> Engine:
+    """Download (or reuse) and SHA-check the pinned runtime and weights."""
     tar = _download(
         allow.runtime.url, cache / f"{allow.runtime.version}.tar.gz", allow.runtime.sha256
     )
@@ -263,22 +286,35 @@ def generate(
     if not rdir.is_dir():
         with tarfile.open(tar) as t:
             t.extractall(rdir, filter="data")
-    binary = _binary(rdir)
     weights = _download(model.url, cache / f"{model.sha256}.gguf", model.sha256)
+    return Engine(_binary(rdir), weights, model, cache)
+
+
+def complete(engine: Engine, name: str, message: str, max_tokens: int = MAX_TOKENS) -> Completion:
+    """One deterministic completion of one user turn."""
+    prompt_file = engine.cache / f"prompt-{name}.txt"
+    prompt_file.write_text(chat_prompt(engine.model.template, message), encoding="utf-8")
+    start = time.monotonic()
+    run = subprocess.run(
+        generation_args(engine.binary, engine.weights, prompt_file, max_tokens),
+        capture_output=True, text=True, timeout=1800,
+        env={"LD_LIBRARY_PATH": str(engine.binary.parent), "PATH": "/usr/bin:/bin"},
+    )  # fmt: skip
+    seconds = round(time.monotonic() - start, 1)
+    if run.returncode != 0:
+        raise ReadingError(f"{name}: generation failed:\n{run.stderr[-3000:]}")
+    return Completion(run.stdout, run.stderr, seconds)
+
+
+def generate(
+    root: Path, allow: Allowlist, model: Model, hashes: list[str], cache: Path
+) -> list[dict[str, Any]]:
+    engine = prepare(allow, model, cache)
     out: list[dict[str, Any]] = []
     for h in hashes:
-        prompt_file = cache / f"prompt-{h}.txt"
         message = user_message(root, h)
-        prompt_file.write_text(chat_prompt(model.template, message), encoding="utf-8")
-        start = time.monotonic()
-        run = subprocess.run(
-            generation_args(binary, weights, prompt_file),
-            capture_output=True, text=True, timeout=1800,
-            env={"LD_LIBRARY_PATH": str(binary.parent), "PATH": "/usr/bin:/bin"},
-        )  # fmt: skip
-        seconds = round(time.monotonic() - start, 1)
-        if run.returncode != 0:
-            raise ReadingError(f"{h}: generation failed:\n{run.stderr[-3000:]}")
+        run = complete(engine, h, message)
+        seconds = run.seconds
         out.append(
             {
                 "hash": h,

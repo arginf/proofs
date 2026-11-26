@@ -115,15 +115,21 @@ jobs:
       - name: Fetch existing readings
         env:
           REPO: ${{ github.repository }}
-        run: curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o existing.json || echo "[]" > existing.json
-      - name: Generate readings for new statements
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o existing.json || echo "[]" > existing.json
+          curl -fsSL "https://raw.githubusercontent.com/$REPO/index/areas.json" -o existing-areas.json || echo "[]" > existing-areas.json
+      - name: Generate readings and area labels for new statements
         run: |
           MODEL=$(python3 -c "import tomllib; print(tomllib.load(open('models.toml','rb'))['model'][0]['name'])")
           python3 -m tools.readings generate --model "$MODEL" --existing existing.json --out readings.json
+          # Same pinned model and weights (already downloaded above); a few seconds per new statement.
+          python3 -m tools.areas generate --model "$MODEL" --existing existing-areas.json --out areas.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: readings
-          path: readings.json
+          path: |
+            readings.json
+            areas.json
   publish-index:
     # arginf.com reads index.json from the `index` branch. Runs only after a verified main build.
     needs: [verify, readings]
@@ -154,15 +160,17 @@ jobs:
         run: |
           # A failed readings job never blocks publishing: keep the previous readings instead.
           [ -f out/readings.json ] || curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o out/readings.json || echo "[]" > out/readings.json
+          [ -f out/areas.json ] || curl -fsSL "https://raw.githubusercontent.com/$REPO/index/areas.json" -o out/areas.json || echo "[]" > out/areas.json
           # Keep passes that full-check.yml recorded on the index branch since verify ran.
           git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > out/latest-cache.json 2>/dev/null || echo '{}' > out/latest-cache.json
           python3 -m tools.incremental merge-cache --out out/audit-cache.json out/audit-cache.json out/latest-cache.json
           python3 -m tools.readings embed out/index.json out/readings.json
+          python3 -m tools.areas embed out/index.json out/areas.json
           python3 -m tools.provenance embed out/index.json
-          python3 -c "import json; json.load(open('out/index.json')); json.load(open('out/readings.json'))"
-          git init -q -b index site && cp out/index.json out/readings.json out/audit-cache.json site/ && cd site
+          python3 -c "import json; json.load(open('out/index.json')); json.load(open('out/readings.json')); json.load(open('out/areas.json'))"
+          git init -q -b index site && cp out/index.json out/readings.json out/areas.json out/audit-cache.json site/ && cd site
           git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
-          git add index.json readings.json audit-cache.json && git commit -qm "index for $SHA"
+          git add index.json readings.json areas.json audit-cache.json && git commit -qm "index for $SHA"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index
   alert:
     # A merged change that fails verification on main freezes the site at the last good index.

@@ -4,3 +4,4 @@ __pycache__/
 index.json
 .cache/
 readings.json
+areas.json
