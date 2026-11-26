@@ -8,7 +8,7 @@ Theorems/<hash>/
   Proof.lean                          theorem proof : statement := ...   (once proved)
   attempts/<attempt>/Attempt.lean     a line of proof, possibly partial (sorry = open goal)
   attempts/<attempt>/attempt.toml     parent = "<attempt hash>" or ""
-translations/<hash>.toml              English readings: model, Wayback archive of the chat, exact output
+translations/<hash>.toml              English readings: Wayback archive of the chat + exact output
 curation.toml                         featured and example statements (maintainers only)
 ```
 

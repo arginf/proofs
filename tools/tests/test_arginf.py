@@ -256,13 +256,12 @@ class TranslationTests(unittest.TestCase):
         h: str,
         archive: str | None = None,
         text: str | None = None,
-        model: str = "Example Model 1",
         extra: str = "",
     ) -> None:
         d = root / "translations"
         d.mkdir(exist_ok=True)
         body = (
-            f'[[reading]]\nmodel = "{model}"\narchive = "{archive or self.ARCHIVE}"\n'
+            f'[[reading]]\narchive = "{archive or self.ARCHIVE}"\n'
             f"text = {json.dumps(text if text is not None else self.OUTPUT)}\n{extra}"
         )
         (d / f"{h}.toml").write_text(body)
@@ -286,9 +285,19 @@ class TranslationTests(unittest.TestCase):
         self._write(root, h)
         self.assertEqual(arginf.check_translation(root, h), [])
         r = arginf.build_index(root)["theorems"][0]["readings"][0]
-        self.assertEqual(
-            r, {"model": "Example Model 1", "archive": self.ARCHIVE, "text": self.OUTPUT}
-        )
+        # The provider comes from the archived share link: verifiable, unlike a model name.
+        self.assertEqual(r, {"provider": "Claude", "archive": self.ARCHIVE, "text": self.OUTPUT})
+
+    def test_provider_for_each_share_host(self) -> None:
+        for host, name in (
+            ("https://claude.ai/share/x", "Claude"),
+            ("https://chatgpt.com/share/x", "ChatGPT"),
+            ("https://chat.openai.com/share/x", "ChatGPT"),
+            ("https://gemini.google.com/share/x", "Gemini"),
+            ("https://g.co/gemini/share/x", "Gemini"),
+            ("https://grok.com/share/x", "Grok"),
+        ):
+            self.assertEqual(arginf.share_provider(host), name)
 
     def test_archive_must_wrap_an_allowlisted_share_link(self) -> None:
         root, h = self._root()
@@ -310,7 +319,7 @@ class TranslationTests(unittest.TestCase):
         self.assertTrue(arginf.check_translation(root, h))
         self._write(root, h, text="x" * 5001)
         self.assertTrue(arginf.check_translation(root, h))
-        self._write(root, h, model="")
+        self._write(root, h, extra='model = "Some Model"\n')
         self.assertTrue(arginf.check_translation(root, h))
         self._write(root, h, extra=f'chat = "{self.SHARE}"\n')
         self.assertTrue(arginf.check_translation(root, h))

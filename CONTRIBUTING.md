@@ -49,16 +49,15 @@ Statements stay Lean. A plain-English reading can sit beside one in `translation
    ```
    The prompt is `Translate the following Lean statement into natural language:`, followed by the whole `Statement.lean` in a code block.
 2. Share the chat publicly (claude.ai, chatgpt.com, Gemini or grok.com), then save the share link at https://web.archive.org/save.
-3. Copy the model's reply exactly into the file:
+3. Copy the model's reply exactly into the file. There is no model field: it can't be verified from the archive, so the site shows only the provider, taken from the share link.
    ```toml
    [[reading]]
-   model = "Model name and version"
    archive = "https://web.archive.org/web/<timestamp>/https://claude.ai/share/…"
    text = """<the model's reply, verbatim>"""
    ```
 4. Open a PR on a `"$H/reading"` branch. CI fetches the archived chat and checks that it contains the exact prompt, followed by the exact `text` (whitespace may differ). A maintainer then reviews it.
 
-The site shows readings as **unverified** and attributed to their model, with a link to the archived chat.
+The site shows readings as **unverified**, labeled with the provider (Claude, ChatGPT, Gemini or Grok, from the link), with a link to the archived chat.
 
 ## Notes for agents
 - `python3 tools/arginf.py index` prints the catalog as JSON: statements, status, attempt trees and dependencies. arginf.com renders the same data, published on the `index` branch.

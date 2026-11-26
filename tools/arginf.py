@@ -38,8 +38,8 @@ ALLOWED_FILES = frozenset({"Statement.lean", "Proof.lean"})
 ATTEMPT_DIR = "attempts"
 ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
 CURATION_FILE = "curation.toml"
-# English readings of statements, each labeled with the model that wrote it and a public chat
-# showing the full context. Prose, so they live outside Theorems/ and need maintainer review.
+# English readings of statements: a model's exact output, in a public chat archived on Wayback.
+# Prose, so they live outside Theorems/ and need maintainer review.
 TRANSLATION_DIR = "translations"
 SHARE_PREFIXES = {
     "claude.ai": "/share/",
@@ -49,13 +49,22 @@ SHARE_PREFIXES = {
     "g.co": "/gemini/share/",
     "grok.com": "/share/",
 }
+# The only attribution shown is the provider, which follows from the share link's host. A
+# free-text model name cannot be verified from the archive, so it is not accepted.
+SHARE_PROVIDERS = {
+    "claude.ai": "Claude",
+    "chatgpt.com": "ChatGPT",
+    "chat.openai.com": "ChatGPT",
+    "gemini.google.com": "Gemini",
+    "g.co": "Gemini",
+    "grok.com": "Grok",
+}
 ARCHIVE_RE = re.compile(r"https://web\.archive\.org/web/(\d{14})/(https://\S+)")
-READING_KEYS = frozenset({"model", "archive", "text"})
+READING_KEYS = frozenset({"archive", "text"})
 READINGS_MAX = 10
 READING_TEXT_MAX = 5000
 PROMPT_TEMPLATE = "Translate the following Lean statement into natural language:\n```\n{lean}\n```"
 FETCH_MAX_BYTES = 20_000_000
-_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}")
 CURATION_KEYS = ("featured", "examples")
 _STATEMENT_RE = re.compile(r"(?m)^def\s+statement\s*:\s*Prop\s*:=")
 _COMMAND_RE = re.compile(
@@ -282,6 +291,10 @@ def _share_link_ok(url: str) -> bool:
     )
 
 
+def share_provider(url: str) -> str:
+    return SHARE_PROVIDERS.get(urlsplit(url).hostname or "", "unknown")
+
+
 def _archive_parts(url: str) -> tuple[str, str] | None:
     """(timestamp, share link) for a Wayback snapshot of an allowlisted share link."""
     m = ARCHIVE_RE.fullmatch(url)
@@ -296,10 +309,8 @@ def _reading_errors(where: str, r: object) -> list[str]:
     errors: list[str] = []
     unknown = set(r) - READING_KEYS
     if unknown:
-        errors.append(f"{where}: unknown keys {sorted(unknown)} (allowed: model, archive, text)")
-    model, archive, text = r.get("model"), r.get("archive"), r.get("text")
-    if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
-        errors.append(f"{where}: model is required (the model that wrote the reading)")
+        errors.append(f"{where}: unknown keys {sorted(unknown)} (allowed: archive, text)")
+    archive, text = r.get("archive"), r.get("text")
     if not isinstance(archive, str) or _archive_parts(archive) is None:
         errors.append(
             f"{where}: archive must be https://web.archive.org/web/<14-digit timestamp>/"
@@ -395,9 +406,14 @@ def load_readings(root: Path, h: str) -> list[dict[str, Any]]:
     if not path.is_file() or check_translation(root, h):
         return []
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    return [
-        {"model": r["model"], "archive": r["archive"], "text": r["text"]} for r in raw["reading"]
-    ]
+    out: list[dict[str, Any]] = []
+    for r in raw["reading"]:
+        parts = _archive_parts(r["archive"])
+        assert parts is not None
+        out.append(
+            {"provider": share_provider(parts[1]), "archive": r["archive"], "text": r["text"]}
+        )
+    return out
 
 
 # Attempts ("lines"): content-addressed, possibly partial, forming a tree -------
