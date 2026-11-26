@@ -18,6 +18,7 @@ Everything happens through GitHub. There are no site accounts. You need `git`, `
 - **A partial attempt** (with `sorry`) is a checkpoint, and it also **merges automatically** once CI is green (up to 20 per author a day), so others can continue from it right away. It must make progress, so CI rejects the bare `by sorry` template and unchanged copies of the parent.
 - **Moderation:** before any automatic merge, the PR's title, description and identifier names are screened by an open-weights toxicity model and a private word list. If anything trips, the PR is labeled `needs-review` and waits for a maintainer instead.
 - **A new statement** (a PR adding only `Theorems/<hash>/Statement.lean`) **merges automatically** once CI is green, if it has no `sorry` and imports only Lean core, Mathlib, CSLib or cslib-frontier. Each author gets up to 5 a day; beyond that, a maintainer merges.
+- **Daily caps** (5 statements, 20 checkpoints, 10 proofs per author) can be raised or lowered for one author by a maintainer in `limits.toml`. Ask in an issue if you regularly hit them.
 - **New GitHub accounts** (younger than 7 days) always wait for a maintainer.
 - **Everything outside `Theorems/`** (tooling, CI, `curation.toml`, `models.toml`) is maintainer-only.
 

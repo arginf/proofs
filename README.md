@@ -9,6 +9,7 @@ Theorems/<hash>/
   attempts/<attempt>/attempt.toml     parent = "<attempt hash>" or ""
 curation.toml                         featured and example statements (maintainers only)
 models.toml                           allowlisted open-weights model + runtime for English readings
+limits.toml                           per-author overrides of the daily automerge caps (maintainers only)
 ```
 
 - **The statements are the statements.** Theorem folders contain plain Lean only: no prose, no comments, no string literals, and nothing that runs code while Lean compiles it (see `tools/safety.py`). The site shows the Lean.

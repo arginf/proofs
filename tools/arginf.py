@@ -29,8 +29,9 @@ from typing import Any
 import tomllib
 
 try:  # `python3 tools/arginf.py` puts tools/ on the path; `python3 -m tools.x` the repo root.
-    from tools import safety
+    from tools import limits, safety
 except ImportError:  # pragma: no cover
+    import limits  # type: ignore[no-redef]
     import safety  # type: ignore[no-redef]
 
 ROOT_DIR = "Theorems"
@@ -580,9 +581,14 @@ def build_index(root: Path) -> dict[str, Any]:
     return {"version": 2, "theorems": list(entries.values())}
 
 
+def _limits_errors(root: Path) -> list[str]:
+    path = root / limits.LIMITS_FILE
+    return limits.parse(path.read_text(encoding="utf-8"))[1] if path.is_file() else []
+
+
 def check_all(root: Path) -> list[str]:
     """Every folder and attempt, as CI checks a PR. main runs this before building."""
-    errors: list[str] = []
+    errors: list[str] = _limits_errors(root)
     base = root / ROOT_DIR
     if not base.is_dir():
         return errors
@@ -666,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
                             errors += check_attempt(att)
             if any(c == CURATION_FILE for c in changed):
                 errors += load_curation(root)[1]
+            if any(c == limits.LIMITS_FILE for c in changed):
+                errors += _limits_errors(root)
             errors = list(dict.fromkeys(errors))
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)

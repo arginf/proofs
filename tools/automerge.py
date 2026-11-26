@@ -26,18 +26,19 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from tools import arginf, moderation, safety
+from tools import arginf, limits, moderation, safety
 
 _SORRY = re.compile(r"\bsorry\b")
 
 
-# Guardrails for automatic merges; beyond them a maintainer merges.
-DAILY_STATEMENTS = 5  # new statements per author per 24 h
-DAILY_CHECKPOINTS = 20  # partial attempts per author per 24 h
-DAILY_PROOFS = 10  # complete proofs per author per 24 h
+# Guardrails for automatic merges; beyond them a maintainer merges. Daily caps per author per
+# 24 h; a maintainer can raise or lower them for one author in limits.toml (tools/limits.py).
+DAILY_STATEMENTS = limits.DEFAULT.statements
+DAILY_CHECKPOINTS = limits.DEFAULT.checkpoints
+DAILY_PROOFS = limits.DEFAULT.proofs
 MIN_ACCOUNT_AGE_DAYS = 7  # newer GitHub accounts always wait for a maintainer
 PR_WORKFLOW_PATH = ".github/workflows/pr.yml"
 MAX_PAGES = 50
@@ -57,6 +58,7 @@ def _decide_statement(
     statement_exists: Callable[[str], bool],
     read: Callable[[str], str],
     recent_statements: Callable[[], int],
+    caps: limits.Caps,
 ) -> Decision:
     if statement_exists(h):
         return Decision(False, f"statement {h} already exists", h, kind="statement")
@@ -65,9 +67,9 @@ def _decide_statement(
     errors = safety.statement_errors(path, text, h)
     if errors:
         return Decision(False, "; ".join(errors), h, kind="statement")
-    if recent_statements() >= DAILY_STATEMENTS:
+    if recent_statements() >= caps.statements:
         return Decision(
-            False, f"author reached {DAILY_STATEMENTS} new statements in 24 h", h, kind="statement"
+            False, f"author reached {caps.statements} new statements in 24 h", h, kind="statement"
         )
     return Decision(True, "new Lean-only statement, checks passed", h, kind="statement")
 
@@ -99,12 +101,14 @@ def decide(
     recent_proofs: Callable[[], int],
     changed_files: int,
     account_age_days: Callable[[], float],
+    caps: limits.Caps = limits.DEFAULT,
 ) -> Decision:
     """Merge a new statement (Statement.lean only) or a new attempt (proof or checkpoint)."""
     if changed_files != len(files) or not files:
         return Decision(False, f"file list incomplete ({len(files)} of {changed_files})")
     d = _decide(
-        files, statement_exists, attempt_lean, recent_statements, recent_checkpoints, recent_proofs
+        files, statement_exists, attempt_lean, recent_statements, recent_checkpoints, recent_proofs,
+        caps,
     )
     if d.merge and account_age_days() < MIN_ACCOUNT_AGE_DAYS:
         return Decision(
@@ -124,6 +128,7 @@ def _decide(
     recent_statements: Callable[[], int],
     recent_checkpoints: Callable[[], int],
     recent_proofs: Callable[[], int],
+    caps: limits.Caps,
 ) -> Decision:
     expected = {"Attempt.lean", "attempt.toml"}
     folders: set[tuple[str, str]] = set()
@@ -161,7 +166,7 @@ def _decide(
         if len(statements) != 1:
             return Decision(False, "one new statement per PR")
         (h,) = statements
-        return _decide_statement(h, statement_exists, attempt_lean, recent_statements)
+        return _decide_statement(h, statement_exists, attempt_lean, recent_statements, caps)
     if len(folders) != 1 or names != expected:
         return Decision(False, "must add exactly one attempt (Attempt.lean and attempt.toml)")
     ((h, a),) = folders
@@ -175,13 +180,13 @@ def _decide(
     code = arginf.strip_comments(text)
     if _SORRY.search(code):
         # CI already enforced progress (no bare template, no unchanged copy of the parent).
-        if recent_checkpoints() >= DAILY_CHECKPOINTS:
+        if recent_checkpoints() >= caps.checkpoints:
             return Decision(
-                False, f"author reached {DAILY_CHECKPOINTS} checkpoints in 24 h", h, a, "checkpoint"
+                False, f"author reached {caps.checkpoints} checkpoints in 24 h", h, a, "checkpoint"
             )
         return Decision(True, "checkpoint (partial attempt), checks passed", h, a, "checkpoint")
-    if recent_proofs() >= DAILY_PROOFS:
-        return Decision(False, f"author reached {DAILY_PROOFS} proofs in 24 h", h, a)
+    if recent_proofs() >= caps.proofs:
+        return Decision(False, f"author reached {caps.proofs} proofs in 24 h", h, a)
     return Decision(True, "complete proof of an existing statement, checks passed", h, a)
 
 
@@ -275,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return (datetime.now(UTC) - created).total_seconds() / 86400
 
+    # Read from main (this job's checkout), never from the PR. An invalid file stops here.
+    caps = limits.caps_for(limits.load(Path.cwd()), login)
     d = decide(
         files,
         statement_exists,
@@ -284,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         recent("proof"),
         int(pr["changed_files"]),
         account_age_days,
+        caps,
     )
     print(f"{'merge' if d.merge else 'skip'}: {d.reason}")
     if not d.merge:
