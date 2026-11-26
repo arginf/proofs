@@ -308,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="previous ledger + legacy titles + PRs merged since")
     b.add_argument("--previous", type=Path, default=None, help="default: the latest artifact")
     b.add_argument("--out", type=Path, required=True)
+    b.add_argument("--announce", action="store_true", help="update newly merged PRs' comments")
     args = parser.parse_args(argv)
     repo, token = os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"]
     previous: list[Entry] = []
@@ -329,7 +330,50 @@ def main(argv: list[str] | None = None) -> int:
     entries = merge(previous, legacy, fresh)
     args.out.write_text(dumps(entries) + "\n", encoding="utf-8")
     print(f"ledger: {len(entries)} entries ({len(fresh)} fetched since {since})")
+    if args.announce:
+        _announce(Path.cwd(), repo, token, previous, entries)
     return 0
+
+
+def _announce(
+    root: Path, repo: str, token: str, previous: list[Entry], entries: list[Entry]
+) -> None:
+    """Update each newly merged PR's status comment with its outcome and badges."""
+    from datetime import UTC, datetime
+
+    from tools import announce, arginf
+
+    info: dict[str, tuple[int, int]] = {}
+    for s in layout.statement_dirs(root):
+        for a in layout.attempt_dirs(s):
+            i = arginf.attempt_info(a)
+            info[a.name] = (int(i["size"]), int(i["openGoals"]))
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    base = f"https://api.github.com/repos/{repo}"
+    for en in announce.to_announce(previous, entries, now):
+        announce.upsert(
+            lambda method, url, body=None: _call(method, url, token, body),
+            base,
+            en.pr,
+            announce.merged_body(en, entries, info),
+        )
+        print(f"announced #{en.pr}")
+
+
+def _call(method: str, url: str, token: str, body: Any = None) -> Any:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode() if body is not None else None,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "arginf-ledger",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+    return json.loads(raw) if raw else None
 
 
 if __name__ == "__main__":

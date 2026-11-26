@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from tools import arginf, layout, ledger, limits, moderation, safety
+from tools import announce, arginf, layout, ledger, limits, moderation, safety
 
 _SORRY = re.compile(r"\bsorry\b")
 
@@ -395,6 +395,14 @@ def main(argv: list[str] | None = None) -> int:
         str(pr["node_id"]),
         sha,
         d.kind,
+    )
+    # Status comment with the workflow's own token, quoting nothing from the PR (tools/announce.py).
+    comment_token = os.environ.get("COMMENT_TOKEN") or token
+    announce.upsert(
+        lambda method, url, body=None: _api(method, url, comment_token, body),
+        base,
+        int(number),
+        announce.queued_body(d.kind),
     )
     print(f"queued #{number} ({d.kind}); the merge queue re-checks it with main before merging")
     return 0

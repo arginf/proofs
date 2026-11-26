@@ -49,6 +49,7 @@ jobs:
       - name: Queue new statements, checkpoints and complete proofs that pass moderation
         env:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          COMMENT_TOKEN: ${{ github.token }} # status comments come from github-actions[bot]
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           # workflow_run matches by name, and a PR can add a workflow named "PR checks";
           # tools/automerge.py acts only on runs of .github/workflows/pr.yml for a pull_request.

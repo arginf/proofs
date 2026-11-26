@@ -20,7 +20,7 @@ Daily caps and earned credit come from the ledger (`tools/ledger.py`), which mai
 ## Repository settings maintainers keep
 
 - Actions: require approval to run workflows for all outside contributors; default `GITHUB_TOKEN` permission read-only; actions pinned by commit SHA.
-- Rulesets: `main` allows no force pushes or deletions, requires the merge queue (merge method: merge; "only merge non-failing PRs"), the "PR checks" jobs `scope` and `lean`, and code-owner review for everything outside `Theorems/`; only GitHub Actions may push `index`.
+- Rulesets: `main` allows no force pushes or deletions, requires the merge queue (merge method: merge; "only merge non-failing PRs"; wait 1 minute to batch, groups of up to 10), the "PR checks" jobs `scope` and `lean`, and code-owner review for everything outside `Theorems/`; only GitHub Actions may push `index`.
 - Labels `arginf:statement`, `arginf:checkpoint` and `arginf:proof` are applied only by automerge. Maintainers don't add them by hand: they are the ledger's record.
 - The arginf GitHub App (variable `ARGINF_APP_ID`, secret `ARGINF_APP_KEY`) is installed on this repository only, with contents and pull requests write and actions read. Automerge enqueues with its token, because GitHub doesn't start the merge queue's checks for events caused by `GITHUB_TOKEN`.
 - Private vulnerability reporting enabled.

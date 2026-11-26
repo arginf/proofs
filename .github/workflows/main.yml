@@ -144,7 +144,7 @@ jobs:
     permissions:
       contents: read # git history for merges from before the merge queue
       actions: read # the previous ledger artifact
-      pull-requests: read # merged PRs, their labels and files
+      pull-requests: write # merged PRs, their labels and files; update their status comment
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -156,7 +156,7 @@ jobs:
       - name: Build the ledger
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -m tools.ledger build --out ledger.json
+        run: python3 -m tools.ledger build --out ledger.json --announce
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ledger
