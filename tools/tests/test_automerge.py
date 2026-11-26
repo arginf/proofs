@@ -35,12 +35,14 @@ class DecideTests(unittest.TestCase):
         lean: str = COMPLETE,
         exists: bool = True,
         recent: int = 0,
+        recent_checkpoints: int = 0,
     ) -> automerge.Decision:
         return automerge.decide(
             fs,
             statement_exists=lambda h: exists,
             attempt_lean=lambda path: lean,
             recent_statements=lambda: recent,
+            recent_checkpoints=lambda: recent_checkpoints,
         )
 
     def test_complete_attempt_on_existing_statement_merges(self) -> None:
@@ -48,12 +50,19 @@ class DecideTests(unittest.TestCase):
         self.assertTrue(d.merge, d.reason)
         self.assertEqual((d.theorem, d.attempt), (H, A))
 
-    def test_partial_attempt_waits_for_a_maintainer(self) -> None:
-        self.assertFalse(self.ok(ATTEMPT, PARTIAL).merge)
+    def test_partial_attempt_merges_as_a_checkpoint(self) -> None:
+        d = self.ok(ATTEMPT, PARTIAL)
+        self.assertTrue(d.merge, d.reason)
+        self.assertEqual(d.kind, "checkpoint")
 
-    def test_sorry_hidden_in_comments_does_not_count_but_real_sorry_does(self) -> None:
-        self.assertTrue(self.ok(ATTEMPT, COMPLETE + "-- sorry\n").merge)
-        self.assertFalse(self.ok(ATTEMPT, COMPLETE.replace("trivial", "sorry")).merge)
+    def test_checkpoint_daily_cap(self) -> None:
+        d = self.ok(ATTEMPT, PARTIAL, recent_checkpoints=automerge.DAILY_CHECKPOINTS)
+        self.assertFalse(d.merge)
+        self.assertTrue(self.ok(ATTEMPT, COMPLETE, recent_checkpoints=99).merge)  # proofs uncapped
+
+    def test_sorry_in_comments_is_not_a_checkpoint_but_real_sorry_is(self) -> None:
+        self.assertEqual(self.ok(ATTEMPT, COMPLETE + "-- sorry\n").kind, "proof")
+        self.assertEqual(self.ok(ATTEMPT, COMPLETE.replace("trivial", "sorry")).kind, "checkpoint")
 
     def test_other_files_never_auto_merge(self) -> None:
         self.assertFalse(self.ok(ATTEMPT + files(".github/workflows/pr.yml")).merge)

@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
-from tools import arginf
+from tools import arginf, moderation
 
 _SORRY = re.compile(r"\bsorry\b")
 
@@ -34,6 +34,7 @@ _SORRY = re.compile(r"\bsorry\b")
 # New statements merge on their own too (they're Lean only), within these guardrails:
 ALLOWED_IMPORT_ROOTS = ("Init", "Std", "Lean", "Mathlib", "Cslib", "CslibFrontier")
 DAILY_STATEMENTS = 5  # per author per 24 h; beyond that a maintainer merges
+DAILY_CHECKPOINTS = 20  # partial attempts per author per 24 h (complete proofs are uncapped)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,8 +72,9 @@ def decide(
     statement_exists: Callable[[str], bool],
     attempt_lean: Callable[[str], str],
     recent_statements: Callable[[], int] = lambda: 0,
+    recent_checkpoints: Callable[[], int] = lambda: 0,
 ) -> Decision:
-    """Merge either a new statement (Statement.lean only) or a new complete attempt."""
+    """Merge a new statement (Statement.lean only) or a new attempt (proof or checkpoint)."""
     expected = {"Attempt.lean", "attempt.toml"}
     folders: set[tuple[str, str]] = set()
     names: set[str] = set()
@@ -119,8 +121,17 @@ def decide(
         attempt_lean(f"{arginf.ROOT_DIR}/{h}/{arginf.ATTEMPT_DIR}/{a}/Attempt.lean")
     )
     if _SORRY.search(code):
-        return Decision(False, "partial attempt (sorry): a maintainer merges checkpoints", h, a)
+        # CI already enforced progress (no bare template, no unchanged copy of the parent).
+        if recent_checkpoints() >= DAILY_CHECKPOINTS:
+            return Decision(
+                False, f"author reached {DAILY_CHECKPOINTS} checkpoints in 24 h", h, a, "checkpoint"
+            )
+        return Decision(True, "checkpoint (partial attempt), checks passed", h, a, "checkpoint")
     return Decision(True, "complete proof of an existing statement, checks passed", h, a)
+
+
+def _no_model(texts: list[str]) -> list[float]:
+    return [0.0 for _ in texts]
 
 
 def _api(method: str, url: str, token: str, body: dict[str, Any] | None = None) -> Any:
@@ -170,22 +181,47 @@ def main(argv: list[str] | None = None) -> int:
         meta = _api("GET", f"{base}/contents/{path}?ref={sha}", token)
         return base64.b64decode(meta["content"]).decode("utf-8")
 
-    def recent_statements() -> int:
-        """Statements this author got auto-merged in the last 24 h (from our commit titles)."""
-        since = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        commits = _api("GET", f"{base}/commits?sha=main&since={since}&per_page=100", token)
-        tag = f"by @{login}"
-        return sum(
-            1
-            for c in commits
-            if c["commit"]["message"].startswith("Merge #")
-            and ": statement " in c["commit"]["message"].split("\n", 1)[0]
-            and c["commit"]["message"].split("\n", 1)[0].endswith(tag)
-        )
+    def recent(kind: str) -> Callable[[], int]:
+        """Merges of this kind for this author in the last 24 h (from our commit titles)."""
 
-    d = decide(files, statement_exists, attempt_lean, recent_statements)
+        def count() -> int:
+            since = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            commits = _api("GET", f"{base}/commits?sha=main&since={since}&per_page=100", token)
+            firsts = [c["commit"]["message"].split("\n", 1)[0] for c in commits]
+            return sum(
+                1
+                for t in firsts
+                if t.startswith("Merge #") and f": {kind} " in t and t.endswith(f"by @{login}")
+            )
+
+        return count
+
+    d = decide(files, statement_exists, attempt_lean, recent("statement"), recent("checkpoint"))
     print(f"{'merge' if d.merge else 'skip'}: {d.reason}")
     if not d.merge:
+        return 0
+    # Moderation gate: anything suspicious waits for a maintainer instead of merging.
+    lean_texts = [attempt_lean(f["filename"]) for f in files if f["filename"].endswith(".lean")]
+    reasons = moderation.moderate(
+        str(matches[0].get("title") or ""),
+        str(matches[0].get("body") or ""),
+        lean_texts,
+        moderation.parse_word_list(os.environ.get("MODERATION_WORDS", "")),
+        moderation.detoxify_scorer() if os.environ.get("MODERATION_MODEL") != "off" else _no_model,
+    )
+    if reasons:
+        _api("POST", f"{base}/issues/{number}/labels", token, {"labels": ["needs-review"]})
+        _api(
+            "POST",
+            f"{base}/issues/{number}/comments",
+            token,
+            {
+                "body": "Not merged automatically; a maintainer will review it. Reason: "
+                + "; ".join(reasons)
+                + "."
+            },
+        )
+        print(f"held for review: {'; '.join(reasons)}")
         return 0
     _api(
         "PUT",
@@ -197,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             "commit_title": (
                 f"Merge #{number}: statement {d.theorem} by @{login}"
                 if d.kind == "statement"
-                else f"Merge #{number}: proof {d.attempt} by @{login}"
+                else f"Merge #{number}: {d.kind} {d.attempt} by @{login}"
             ),
         },
     )
