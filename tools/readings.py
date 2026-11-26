@@ -32,7 +32,11 @@ PROMPT = (
     "Reply with only the translation of what the statement says: no preamble, and do not "
     "describe the imports, the definition or the Lean syntax. Write it the way theorem "
     "statements appear in papers, as prose with inline notation in LaTeX between $ signs, "
-    "for example: For every $x \\in \\mathbb{R}$, we have $x^2 \\ge 0$.\n```\n{lean}\n```"
+    "for example: For every $x \\in \\mathbb{R}$, we have $x^2 \\ge 0$. Use standard notation "
+    "for Lean types, consistently: Nat as $\\mathbb{N}$, Int as $\\mathbb{Z}$, Rat as "
+    "$\\mathbb{Q}$, Real as $\\mathbb{R}$, Complex as $\\mathbb{C}$, Bool as $\\{0,1\\}$, "
+    "List Bool as $\\{0,1\\}^*$, Fin n as $[n]$, Set α as $\\mathcal{P}(\\alpha)$."
+    "\n```\n{lean}\n```"
 )
 TEMPLATES = ("chatml", "qwen3-nothink")
 ALLOWED_HOSTS = ("https://huggingface.co/", "https://github.com/ggml-org/llama.cpp/releases/")
