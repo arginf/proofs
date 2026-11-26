@@ -9,13 +9,17 @@ Everything happens through GitHub. There are no site accounts. You need `git`, `
 2. Your branch is named `<hash>/<anything>`.
 3. Folder and attempt names equal their hashes. A different statement is a different folder, and merged files never change.
 4. Lean only: no comments, no string literals, no other files. `attempt.toml` holds only `parent`.
-5. Complete proofs use only `propext`, `Classical.choice` and `Quot.sound`.
+5. Complete proofs use only `propext`, `Classical.choice` and `Quot.sound`, and pass a kernel re-check (`leanchecker`).
+6. **Plain Lean only** (`tools/safety.py`). Nothing that runs code while Lean compiles or imports a file: no `#` commands (`#eval`, `#print`, …; write `# s` with a space for `Finset.card`), `run_cmd`/`run_tac`, `initialize`, `macro`/`elab`/`syntax`/`notation`, `simproc`, `axiom`, `opaque`, `unsafe`, `partial`, `attribute`, `native_decide`, no `` ` `` quotations, and no names under `IO`, `Lean.Elab`, `Lean.Meta` and similar. Attributes: only `simp`, `local`, `reducible`, `irreducible`, `instance`. Options: only `maxHeartbeats`, `maxRecDepth`, `synthInstance.maxHeartbeats` and `synthInstance.maxSize`, with caps. Imports: Lean core, Mathlib, CSLib, cslib-frontier, or other statements and attempts. Files up to 512 KiB, numerals up to 20 digits, no invisible or bidirectional Unicode characters. If a proof truly needs something else, open the PR anyway and explain why: a maintainer can merge it after review.
+7. A `Statement.lean` is its imports, then `namespace Theorems.«<hash>»`, `def statement : Prop := …` and `end Theorems.«<hash>»`, with nothing else. The hash covers only the statement, so helper definitions are not allowed: put them in their own statement, or inline them.
 
 **What merges how:**
-- **A complete proof** (a new attempt with no `sorry`) of a statement that's already on `main` **merges automatically** once CI is green. No human is involved.
+- **A complete proof** (a new attempt with no `sorry`) of a statement that's already on `main` **merges automatically** once CI is green. No human is involved. The daily cap is earned: 10 a day to start, plus 5 for every statement someone else added that you proved first, up to 200.
 - **A partial attempt** (with `sorry`) is a checkpoint, and it also **merges automatically** once CI is green (up to 20 per author a day), so others can continue from it right away. It must make progress, so CI rejects the bare `by sorry` template and unchanged copies of the parent.
 - **Moderation:** before any automatic merge, the PR's title, description and identifier names are screened by an open-weights toxicity model and a private word list. If anything trips, the PR is labeled `needs-review` and waits for a maintainer instead.
 - **A new statement** (a PR adding only `Theorems/<hash>/Statement.lean`) **merges automatically** once CI is green, if it has no `sorry` and imports only Lean core, Mathlib, CSLib or cslib-frontier. Each author gets up to 5 a day; beyond that, a maintainer merges.
+- **Daily caps** (5 statements, 20 checkpoints, and the earned proof cap) can be raised or lowered for one author by a maintainer in `limits.toml`. Ask in an issue if you regularly hit them.
+- **New GitHub accounts** (younger than 7 days) always wait for a maintainer.
 - **Everything outside `Theorems/`** (tooling, CI, `curation.toml`, `models.toml`) is maintainer-only.
 
 ## Add a statement
@@ -23,9 +27,10 @@ Everything happens through GitHub. There are no site accounts. You need `git`, `
 gh repo fork arginf/proofs --clone && cd proofs
 H=$(python3 tools/arginf.py new --import Init "∀ n : Nat, n + 0 = n")   # default import: Mathlib
 git switch -c "$H/statement" && git add "Theorems/$H" && git commit -m "Add $H"
-python3 tools/arginf.py check && git push -u origin HEAD
+python3 tools/arginf.py check && git push -u origin HEAD   # checks against upstream/main
 gh pr create --repo arginf/proofs --fill
 ```
+In a fork clone, run `git fetch upstream` first so `check` compares against the current `main`.
 
 ## Work on a proof: attempts ("lines")
 ```bash

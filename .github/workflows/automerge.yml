@@ -1,25 +1,29 @@
-# Merge complete, verified proofs on their own. Runs from main after "PR checks" succeed, and
+# Merge new statements, checkpoints and verified proofs on their own. Runs from main after "PR checks" succeed, and
 # never checks out or executes PR code: tools/automerge.py inspects the PR through the API.
 name: automerge
 on:
-  workflow_run:
+  # Safe here: this job never checks out or runs PR code, re-checks the PR through the API, and
+  # acts only on runs of .github/workflows/pr.yml (see tools/automerge.py: trusted_run).
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: ["PR checks"]
     types: [completed]
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+permissions: {}
 jobs:
   merge:
-    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.path == '.github/workflows/pr.yml'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # merge the PR
+      pull-requests: write # label and comment on PRs held for review
+      actions: write # dispatch main.yml (merges by GITHUB_TOKEN trigger no push workflows)
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
+          fetch-depth: 0 # earned proof caps read main's merge history
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install the moderation model (CPU)
@@ -30,6 +34,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # workflow_run matches by name, and a PR can add a workflow named "PR checks";
+          # tools/automerge.py acts only on runs of .github/workflows/pr.yml for a pull_request.
+          WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
           # Optional private word list (one per line), kept out of the public repo.
           MODERATION_WORDS: ${{ secrets.MODERATION_WORDS }}
         run: python3 -m tools.automerge "$HEAD_SHA"

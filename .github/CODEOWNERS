@@ -1,6 +1,7 @@
 # Review rules (enforced by the ruleset on main: code-owner review required where owned).
 # Everything needs a maintainer's review by default...
 * @adampdavis
-# ...except theorem folders, which hold Lean only. New statements and complete proofs are
-# merged automatically once CI passes (tools/automerge.py); partial attempts a maintainer merges.
+# ...except theorem folders, which hold plain Lean only (tools/safety.py). New statements,
+# checkpoints and complete proofs merge automatically once CI passes (tools/automerge.py);
+# anything outside its guardrails waits for a maintainer.
 /Theorems/

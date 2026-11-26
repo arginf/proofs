@@ -28,7 +28,7 @@ STATEMENT = (
 )
 
 
-class DecideTests(unittest.TestCase):
+class _DecideBase(unittest.TestCase):
     def ok(
         self,
         fs: list[dict[str, str]],
@@ -36,6 +36,9 @@ class DecideTests(unittest.TestCase):
         exists: bool = True,
         recent: int = 0,
         recent_checkpoints: int = 0,
+        recent_proofs: int = 0,
+        changed_files: int | None = None,
+        account_age_days: float = 365.0,
     ) -> automerge.Decision:
         return automerge.decide(
             fs,
@@ -43,8 +46,13 @@ class DecideTests(unittest.TestCase):
             attempt_lean=lambda path: lean,
             recent_statements=lambda: recent,
             recent_checkpoints=lambda: recent_checkpoints,
+            recent_proofs=lambda: recent_proofs,
+            changed_files=len(fs) if changed_files is None else changed_files,
+            account_age_days=lambda: account_age_days,
         )
 
+
+class DecideTests(_DecideBase):
     def test_complete_attempt_on_existing_statement_merges(self) -> None:
         d = self.ok(ATTEMPT)
         self.assertTrue(d.merge, d.reason)
@@ -58,7 +66,11 @@ class DecideTests(unittest.TestCase):
     def test_checkpoint_daily_cap(self) -> None:
         d = self.ok(ATTEMPT, PARTIAL, recent_checkpoints=automerge.DAILY_CHECKPOINTS)
         self.assertFalse(d.merge)
-        self.assertTrue(self.ok(ATTEMPT, COMPLETE, recent_checkpoints=99).merge)  # proofs uncapped
+        self.assertTrue(self.ok(ATTEMPT, COMPLETE, recent_checkpoints=99).merge)  # separate cap
+
+    def test_complete_proof_daily_cap(self) -> None:
+        self.assertFalse(self.ok(ATTEMPT, COMPLETE, recent_proofs=automerge.DAILY_PROOFS).merge)
+        self.assertTrue(self.ok(ATTEMPT, COMPLETE, recent_proofs=automerge.DAILY_PROOFS - 1).merge)
 
     def test_sorry_in_comments_is_not_a_checkpoint_but_real_sorry_is(self) -> None:
         self.assertEqual(self.ok(ATTEMPT, COMPLETE + "-- sorry\n").kind, "proof")
@@ -115,6 +127,66 @@ class DecideTests(unittest.TestCase):
             f"Theorems/{H}/attempts/{A}/attempt.toml",
         )
         self.assertFalse(self.ok(bad).merge)
+
+
+class HardeningTests(_DecideBase):
+    """Defense in depth: automerge re-checks what CI checked, and trusts only its own trigger."""
+
+    def test_unsafe_lean_never_merges_even_if_ci_passed(self) -> None:
+        for extra in ("#eval 1", "run_cmd pure ()", "set_option debug.skipKernelTC true in", "`x"):
+            with self.subTest(extra=extra):
+                lean = COMPLETE.replace("theorem proof", f"{extra}\ntheorem proof")
+                self.assertFalse(self.ok(ATTEMPT, lean).merge)
+                self.assertFalse(
+                    self.ok(
+                        ATTEMPT, PARTIAL.replace("theorem proof", f"{extra}\ntheorem proof")
+                    ).merge
+                )
+
+    def test_statement_with_helper_never_merges(self) -> None:
+        stmt = files(f"Theorems/{H}/Statement.lean")
+        lean = STATEMENT.replace("def statement", "def helper : Prop := False\n\ndef statement")
+        self.assertFalse(self.ok(stmt, lean=lean, exists=False).merge)
+
+    def test_statement_namespace_must_match_its_folder(self) -> None:
+        stmt = files(f"Theorems/{A}/Statement.lean")
+        self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=False).merge)
+
+    def test_truncated_file_list_never_merges(self) -> None:
+        self.assertFalse(self.ok(ATTEMPT, changed_files=3).merge)
+        self.assertFalse(self.ok(ATTEMPT, changed_files=0).merge)
+
+    def test_new_accounts_wait_for_a_maintainer(self) -> None:
+        young = automerge.MIN_ACCOUNT_AGE_DAYS - 0.5
+        self.assertFalse(self.ok(ATTEMPT, account_age_days=young).merge)
+        stmt = files(f"Theorems/{H}/Statement.lean")
+        self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=False, account_age_days=young).merge)
+
+    def test_only_our_own_pr_workflow_counts(self) -> None:
+        self.assertTrue(automerge.trusted_run(".github/workflows/pr.yml", "pull_request"))
+        for path, event in (
+            (".github/workflows/other.yml", "pull_request"),
+            (".github/workflows/pr.yml", "push"),
+            (".github/workflows/pr.yml@refs/heads/x", "pull_request"),
+            ("", "pull_request"),
+        ):
+            with self.subTest(path=path, event=event):
+                self.assertFalse(automerge.trusted_run(path, event))
+
+    def test_pages_are_all_fetched(self) -> None:
+        pages = {1: list(range(100)), 2: list(range(100, 200)), 3: [200]}
+        seen: list[int] = []
+
+        def fetch(page: int) -> list[int]:
+            seen.append(page)
+            return pages.get(page, [])
+
+        self.assertEqual(automerge.all_pages(fetch), list(range(201)))
+        self.assertEqual(seen, [1, 2, 3])
+
+    def test_pages_have_a_ceiling(self) -> None:
+        with self.assertRaises(RuntimeError):
+            automerge.all_pages(lambda page: list(range(100)), max_pages=5)
 
 
 if __name__ == "__main__":

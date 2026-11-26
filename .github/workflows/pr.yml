@@ -1,6 +1,8 @@
 # Checks pull requests to this repository only (GitHub Actions terms: CI for this project,
-# not a general compute service). Untrusted code from forks runs with a read-only token and
-# no secrets, and only after the scope check passes.
+# not a general compute service). Untrusted Lean from forks runs with a read-only token and
+# no secrets, and only after the scope check passes. The scope check includes the lexical
+# allowlist (tools/safety.py), so nothing in a theorem folder can run code while Lean compiles
+# it; the kernel re-check below is the second layer. automerge.yml trusts only this file.
 name: PR checks
 on:
   pull_request:
@@ -18,11 +20,11 @@ jobs:
       hash: ${{ steps.scope.outputs.hash }}
       attempt: ${{ steps.scope.outputs.attempt }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Tool tests
@@ -55,13 +57,15 @@ jobs:
       HASH: ${{ needs.scope.outputs.hash }}
       ATTEMPT: ${{ needs.scope.outputs.attempt }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Install Lean (pinned toolchain only)
         run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
-          sh elan-init.sh -y --default-toolchain none
+          # elan v4.4.0, pinned by checksum (not the moving master install script).
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.4.0/elan-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/elan.tgz"
+          echo "0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2  $RUNNER_TEMP/elan.tgz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/elan.tgz" -C "$RUNNER_TEMP" && "$RUNNER_TEMP/elan-init" -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           "$HOME/.elan/bin/elan" toolchain install "$(cat lean-toolchain)"
       # Fast path: a folder that only imports Lean core compiles in seconds, with no Mathlib.
@@ -82,7 +86,7 @@ jobs:
       # Full path: restore the dependency build (Mathlib, CSLib, cslib-frontier) saved by main.
       - name: Restore dependency cache
         if: steps.fast.outputs.full == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .lake/packages
           key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
@@ -94,6 +98,11 @@ jobs:
       - name: Build
         if: steps.fast.outputs.full == 'true'
         run: lake build
+      - name: Kernel re-check (leanchecker)
+        if: steps.fast.outputs.full == 'true'
+        run: |
+          # Replays every declaration in the kernel, so nothing reached the environment unchecked.
+          if [ -z "$HASH" ]; then python3 tools/arginf.py kernel; else python3 tools/arginf.py kernel "$HASH"; fi
       - name: Proof matches statement, allowed axioms only
         if: steps.fast.outputs.full == 'true'
         run: |

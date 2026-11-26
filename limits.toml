@@ -1,0 +1,9 @@
+# Per-author overrides of the daily automerge caps (see tools/limits.py). Maintainers only:
+# changing this file is a code-owner-reviewed PR, and automerge reads it from main.
+#
+# Defaults per author per 24 h: statements = 5, checkpoints = 20, proofs = 10.
+# 0 means that kind always waits for a maintainer. A key left out keeps its default.
+#
+# [authors.some-login]
+# proofs = 100
+# checkpoints = 50

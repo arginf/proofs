@@ -11,16 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: leanprover/lean-action@v1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Every folder passes the PR checks (including the Lean allowlist)
+        run: python3 tools/arginf.py check-all
+      - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1
         with:
           auto-config: false
           use-mathlib-cache: false
       - name: Restore dependency cache
         id: depcache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .lake/packages
           key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
@@ -30,17 +35,21 @@ jobs:
           lake exe cache get || true
           # cslib-frontier publishes build outputs for every main commit; fall back to building.
           (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
-      - name: Build
-        run: lake build
+      # Saved before any theorem folder is compiled, so contributed Lean never touches the cache
+      # that every PR check restores.
       - name: Save dependency cache for PR checks
         if: steps.depcache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .lake/packages
           key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+      - name: Build
+        run: lake build
+      - name: Kernel re-check (leanchecker)
+        run: python3 tools/arginf.py kernel
       - run: python3 tools/arginf.py audit
       - run: python3 tools/arginf.py index > index.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: index
           path: index.json
@@ -51,10 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Fetch existing readings
@@ -65,7 +74,7 @@ jobs:
         run: |
           MODEL=$(python3 -c "import tomllib; print(tomllib.load(open('models.toml','rb'))['model'][0]['name'])")
           python3 -m tools.readings generate --model "$MODEL" --existing existing.json --out readings.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: readings
           path: readings.json
@@ -78,15 +87,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0  # provenance reads when each attempt was first added
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: index
           path: out
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         continue-on-error: true
         with:
           name: readings
@@ -106,3 +115,23 @@ jobs:
           git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
           git add index.json readings.json && git commit -qm "index for $SHA"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index
+  alert:
+    # A merged change that fails verification on main freezes the site at the last good index.
+    # Open an issue so a maintainer reverts it quickly.
+    needs: verify
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$REPO/issues" -f title="main failed verification at ${SHA:0:12}" \
+            -f body="The main workflow failed at $SHA: $RUN_URL. The site keeps the last verified index until main is fixed or the merge is reverted." \
+            -f "labels[]=main-broken" >/dev/null

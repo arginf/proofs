@@ -3,7 +3,9 @@
 
     python3 tools/arginf.py hash Theorems/<hash>/Statement.lean
     python3 tools/arginf.py new [--import Mathlib] "<Lean Prop>"
-    python3 tools/arginf.py check [--base origin/main]   # same checks as CI
+    python3 tools/arginf.py check [--base upstream/main] # same checks as CI
+    python3 tools/arginf.py check-all                    # every folder (main runs this)
+    python3 tools/arginf.py kernel [<hash> ...]          # kernel re-check after lake build
     python3 tools/arginf.py index > index.json
 
 Each theorem lives in Theorems/<hash>/. The hash is the first 12 hex digits of
@@ -21,9 +23,16 @@ import re
 import secrets
 import subprocess
 import sys
-import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+import tomllib
+
+try:  # `python3 tools/arginf.py` puts tools/ on the path; `python3 -m tools.x` the repo root.
+    from tools import limits, safety
+except ImportError:  # pragma: no cover
+    import limits  # type: ignore[no-redef]
+    import safety  # type: ignore[no-redef]
 
 ROOT_DIR = "Theorems"
 HASH_LEN = 12
@@ -52,37 +61,10 @@ class ToolError(Exception):
 
 def strip_comments(text: str) -> str:
     """Remove Lean `--` and nested `/- -/` comments, leaving string literals intact."""
-    out: list[str] = []
-    i, n, depth = 0, len(text), 0
-    while i < n:
-        two = text[i : i + 2]
-        if depth:
-            if two == "/-":
-                depth, i = depth + 1, i + 2
-            elif two == "-/":
-                depth, i = depth - 1, i + 2
-                if depth == 0:
-                    out.append(" ")
-            else:
-                i += 1
-            continue
-        if two == "/-":
-            depth, i = 1, i + 2
-        elif two == "--":
-            while i < n and text[i] != "\n":
-                i += 1
-        elif text[i] == '"':
-            j = i + 1
-            while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
-            out.append(text[i : j + 1])
-            i = j + 1
-        else:
-            out.append(text[i])
-            i += 1
-    if depth:
-        raise ToolError("unterminated block comment")
-    return "".join(out)
+    try:
+        return safety.strip_comments(text)
+    except safety.UnterminatedCommentError as err:
+        raise ToolError(str(err)) from err
 
 
 def extract_statement(text: str) -> str:
@@ -193,6 +175,7 @@ def check_folder(folder: Path) -> list[str]:
             errors.append(f"{folder}: folder name does not match statement hash {h}")
     except ToolError as err:
         errors.append(f"{stmt}: {err}")
+    errors += safety.statement_errors(stmt, stmt.read_text(encoding="utf-8"), folder.name)
     for f in folder.iterdir():
         if f.name == ATTEMPT_DIR and f.is_dir():
             continue
@@ -332,6 +315,7 @@ def check_attempt(folder: Path) -> list[str]:
         return errors + [f"{folder}: missing Attempt.lean"]
     text = f.read_text(encoding="utf-8")
     errors += prose_errors(f, text)
+    errors += safety.attempt_errors(f, text)
     extra = [ln for ln in text.splitlines() if ln.startswith("import ") and "Statement" not in ln]
     code = "\n".join(extra + ["", _attempt_code(text)]).strip()
     if attempt_hash(code, parent) != folder.name:
@@ -386,7 +370,7 @@ def attempt_info(folder: Path) -> dict[str, Any]:
 # Axiom audit (CI runs this after `lake build`) ---------------------------------
 
 ALLOWED_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
-_AXIOMS_RE = re.compile(r"depends on axioms: \[(.*?)\]", re.S)
+_AXIOMS_RE = re.compile(r"depends on axioms: \[(.*?)\]", re.DOTALL)
 
 
 def audit_source(h: str, attempt: str) -> str:
@@ -418,6 +402,54 @@ def parse_axioms(output: str) -> list[str]:
 
 def forbidden_axioms(axioms: list[str]) -> list[str]:
     return [a for a in axioms if a not in ALLOWED_AXIOMS]
+
+
+def theorem_modules(root: Path, hashes: list[str] | None = None) -> list[str]:
+    """Statement and attempt modules, statements first, for these folders (default: all)."""
+    base = root / ROOT_DIR
+    folders = (
+        sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name))
+        if base.is_dir()
+        else []
+    )
+    if hashes is not None:
+        folders = [f for f in folders if f.name in set(hashes)]
+    mods: list[str] = []
+    for f in folders:
+        if (f / "Statement.lean").is_file():
+            mods.append(f"{ROOT_DIR}.«{f.name}».Statement")
+        adir = f / ATTEMPT_DIR
+        if adir.is_dir():
+            mods += [
+                f"{ROOT_DIR}.«{f.name}».{ATTEMPT_DIR}.«{a.name}».Attempt"
+                for a in sorted(adir.iterdir())
+                if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
+            ]
+    return mods
+
+
+def kernel_check(root: Path, modules: list[str], env: dict[str, str] | None = None) -> list[str]:
+    """Replay every declaration of each module in the Lean kernel, one process per module.
+
+    `leanchecker` ships with the toolchain. It loads .olean files without running their
+    initializers, so it catches declarations that reached the environment without passing the
+    kernel. Run it after building and before trusting `#print axioms`. Each run imports the
+    module's dependencies (Mathlib) afresh, so modules are checked one at a time to bound
+    memory."""
+    if not modules:
+        return ["kernel re-check: no modules to check"]
+    errors: list[str] = []
+    for module in modules:
+        cmd = ["leanchecker", module]
+        if env is None:
+            cmd = ["lake", "env", *cmd]
+        run = subprocess.run(
+            cmd, cwd=root, env=env, capture_output=True, text=True, timeout=3600, check=False
+        )
+        if run.returncode != 0:
+            out = (run.stdout + run.stderr).strip()[:2000] or "(no output)"
+            errors.append(f"kernel re-check failed for {module} (exit {run.returncode}):\n{out}")
+    return errors
 
 
 def audit(root: Path, h: str, attempt: str) -> list[str]:
@@ -508,6 +540,9 @@ def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | No
         )
         if run.returncode != 0:
             return [f"{module}: {(run.stdout + run.stderr).strip()[:2000]}"]
+    kernel = kernel_check(root, [m for m, _ in plan if m.startswith(f"{ROOT_DIR}.«{h}».")], env)
+    if kernel:
+        return kernel
     # Every complete attempt in the folder is a proof, so all of them are audited.
     targets = sorted(set(complete_attempts(root, h)) | ({attempt} if attempt else set()))
     errors: list[str] = []
@@ -578,7 +613,40 @@ def build_index(root: Path) -> dict[str, Any]:
     return {"version": 2, "theorems": list(entries.values())}
 
 
+def _limits_errors(root: Path) -> list[str]:
+    path = root / limits.LIMITS_FILE
+    return limits.parse(path.read_text(encoding="utf-8"))[1] if path.is_file() else []
+
+
+def check_all(root: Path) -> list[str]:
+    """Every folder and attempt, as CI checks a PR. main runs this before building."""
+    errors: list[str] = _limits_errors(root)
+    base = root / ROOT_DIR
+    if not base.is_dir():
+        return errors
+    for folder in sorted(base.iterdir()):
+        if not (folder.is_dir() and HASH_RE.match(folder.name)):
+            errors.append(f"{folder}: not a {ROOT_DIR}/<hash>/ folder")
+            continue
+        errors += check_folder(folder)
+        adir = folder / ATTEMPT_DIR
+        if adir.is_dir():
+            for att in sorted(adir.iterdir()):
+                if att.is_dir() and HASH_RE.match(att.name):
+                    for e in check_attempt(att):
+                        if "no progress" not in e:  # judged when the attempt was merged
+                            errors.append(e)
+                else:
+                    errors.append(f"{att}: not an attempt folder")
+    return errors
+
+
 # CLI ---------------------------------------------------------------------------
+
+
+def default_base(remotes: list[str]) -> str:
+    """After `gh repo fork --clone`, origin is your fork and upstream is arginf/proofs."""
+    return "upstream/main" if "upstream" in remotes else "origin/main"
 
 
 def _git(*args: str) -> str:
@@ -594,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     p_new.add_argument("prop", help="the Lean Prop, e.g. '∀ n : Nat, n + 0 = n'")
     p_new.add_argument("--import", dest="imports", action="append", default=None)
     p_check = sub.add_parser("check", help="run the PR scope and folder checks locally")
-    p_check.add_argument("--base", default="origin/main")
+    p_check.add_argument("--base", default=None, help="default: upstream/main if present")
     p_check.add_argument("--branch", default=None)
     sub.add_parser("index", help="print index.json for the site")
     p_att = sub.add_parser("attempt", help="start a new attempt, optionally continuing another")
@@ -605,6 +673,9 @@ def main(argv: list[str] | None = None) -> int:
     p_fast = sub.add_parser("fast", help="compile + audit a core-only folder without Mathlib")
     p_fast.add_argument("theorem")
     p_fast.add_argument("--attempt", default=None)
+    p_kernel = sub.add_parser("kernel", help="replay modules in the kernel (after `lake build`)")
+    p_kernel.add_argument("hashes", nargs="*", help="statements to check (default: all)")
+    sub.add_parser("check-all", help="folder, attempt and safety checks for every folder")
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="statements to audit (default: all)")
     args = parser.parse_args(argv)
@@ -618,7 +689,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"next: git switch -c {h}/statement && git add {ROOT_DIR}/{h}", file=sys.stderr)
         elif args.cmd == "check":
             branch = args.branch or _git("rev-parse", "--abbrev-ref", "HEAD").strip()
-            changed = _git("diff", "--name-only", f"{args.base}...HEAD").split()
+            base = args.base or default_base(_git("remote").split())
+            print(f"checking against {base}", file=sys.stderr)
+            changed = _git("diff", "--name-only", f"{base}...HEAD").split()
             errors = check_scope(changed, branch)
             for c in changed:
                 parts = PurePosixPath(c).parts
@@ -631,6 +704,8 @@ def main(argv: list[str] | None = None) -> int:
                             errors += check_attempt(att)
             if any(c == CURATION_FILE for c in changed):
                 errors += load_curation(root)[1]
+            if any(c == limits.LIMITS_FILE for c in changed):
+                errors += _limits_errors(root)
             errors = list(dict.fromkeys(errors))
             for e in errors:
                 print(f"error: {e}", file=sys.stderr)
@@ -668,6 +743,20 @@ def main(argv: list[str] | None = None) -> int:
             if errors:
                 return 1
             print(f"ok: {len(pairs)} proof(s) use only {sorted(ALLOWED_AXIOMS)}")
+        elif args.cmd == "kernel":
+            errors = kernel_check(root, theorem_modules(root, args.hashes or None))
+            for e in errors:
+                print(f"error: {e}", file=sys.stderr)
+            if errors:
+                return 1
+            print("ok: kernel re-check passed")
+        elif args.cmd == "check-all":
+            errors = check_all(root)
+            for e in errors:
+                print(f"error: {e}", file=sys.stderr)
+            if errors:
+                return 1
+            print("ok")
         elif args.cmd == "index":
             json.dump(build_index(root), sys.stdout, ensure_ascii=False, indent=1)
             print()
