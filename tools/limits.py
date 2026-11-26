@@ -3,7 +3,7 @@
 The proof cap grows with an author's record: BASE_PROOFS a day, plus PROOFS_PER_EARNED for each
 statement someone else added where this author's proof merged first, up to MAX_EARNED_PROOFS.
 Proving your own statements, or proving a statement again, earns nothing (see
-automerge.earned_proofs), so the cap cannot be farmed with trivial statements.
+ledger.earned), so the cap cannot be farmed with trivial statements.
 
 Maintainers can also set any cap for one author in limits.toml; a value there wins.
 

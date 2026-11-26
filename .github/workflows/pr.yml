@@ -7,10 +7,14 @@ name: PR checks
 on:
   pull_request:
     branches: [main]
+  # The merge queue re-runs these checks on each queued group (main plus the queued PRs). Job
+  # names must stay the same for both events: they are the required checks.
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}
   cancel-in-progress: true
 jobs:
   scope:
@@ -38,7 +42,13 @@ jobs:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
         run: |
+          # A queued group: each PR in it already passed its own scope check, and rulesets require
+          # code-owner review for anything outside Theorems/. Re-check every folder, then build all.
+          if [[ "$EVENT" == "merge_group" ]]; then
+            python3 tools/arginf.py check-all; echo "hash=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           # Maintainers (write access or more) change tooling on infra/* branches in this repo;
           # everyone else is scoped. Org membership can be private, so ask the API.
           PERM=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission 2>/dev/null || echo none)

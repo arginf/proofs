@@ -6,3 +6,5 @@
 - Shard fill is random: one directory passes GitHub's 3,000 entries at about 700k items per level, not 768k.
 - `arginf.py path <hash> [<attempt>]` prints a folder; CONTRIBUTING and pr.yml use it instead of shell substrings.
 - Run `python3 -m unittest discover -s tools/tests -t .` and `python3 tools/arginf.py check-all`.
+- Merge queue (2026-11-27): automerge no longer merges. `automerge.enqueue` adds the `arginf:<kind>` label, then `enqueuePullRequest` with `expectedHeadOid` = the checked commit. pr.yml also runs on `merge_group` (check-all, then the full build); keep its job names (`scope`, `lean`) stable, they are the required checks.
+- `ledger.py` owns "who merged what": entries come from labelled merged PRs (author, merge time and files from the API) plus automerge's pre-queue commit titles through the rename map. Never derive credit from commit authors or titles of new merges. main's `ledger` job uploads `ledger.json`; automerge reads the latest artifact (`ledger.read_ledger`), counts merges after that run with one search, and adds PRs still queued (`automerge.recent_count`). No ledger: last 24 h from the API and no earned credit (fail toward lower caps).

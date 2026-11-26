@@ -189,5 +189,100 @@ class HardeningTests(_DecideBase):
             automerge.all_pages(lambda page: list(range(100)), max_pages=5)
 
 
+class QueueTests(unittest.TestCase):
+    """Merges go through GitHub's merge queue; the kind label is the record."""
+
+    def test_enqueue_labels_then_enqueues_at_the_checked_commit(self) -> None:
+        calls: list[tuple[str, str, object]] = []
+
+        def api(method: str, url: str, body: object = None) -> object:
+            calls.append((method, url, body))
+            return {"data": {"enqueuePullRequest": {"mergeQueueEntry": {"position": 1}}}}
+
+        automerge.enqueue(api, "https://api.github.com/repos/o/r", 7, "PR_node", "c" * 40, "proof")
+        self.assertEqual(calls[0][:2], ("POST", "https://api.github.com/repos/o/r/issues/7/labels"))
+        self.assertEqual(calls[0][2], {"labels": ["arginf:proof"]})
+        method, url, body = calls[1]
+        self.assertEqual((method, url), ("POST", "https://api.github.com/graphql"))
+        assert isinstance(body, dict)
+        self.assertIn("enqueuePullRequest", body["query"])
+        self.assertEqual(body["variables"], {"id": "PR_node", "sha": "c" * 40})
+        self.assertEqual(len(calls), 2)
+
+    def test_enqueue_fails_loudly_on_graphql_errors(self) -> None:
+        def api(method: str, url: str, body: object = None) -> object:
+            return {"errors": [{"message": "nope"}]} if url.endswith("/graphql") else None
+
+        with self.assertRaises(RuntimeError):
+            automerge.enqueue(api, "https://api.github.com/repos/o/r", 7, "n", "c" * 40, "proof")
+
+    def test_recent_counts_ledger_gap_and_queued(self) -> None:
+        from tools import ledger
+
+        def en(pr: int, who: str, kind: str, t: str) -> ledger.Entry:
+            return ledger.Entry(pr, who, kind, H, A, t)
+
+        ledger_entries = [
+            en(1, "bob", "proof", "2026-11-27T01:00:00Z"),
+            en(2, "bob", "proof", "2026-11-25T01:00:00Z"),
+        ]  # too old
+        gap = [
+            en(1, "bob", "proof", "2026-11-27T01:00:00Z"),  # also in the ledger: once
+            en(3, "bob", "proof", "2026-11-27T02:00:00Z"),
+            en(4, "amy", "proof", "2026-11-27T02:00:00Z"),
+        ]
+        open_prs = [
+            {"number": 5, "user": {"login": "Bob"}, "labels": [{"name": "arginf:proof"}]},
+            {"number": 6, "user": {"login": "bob"}, "labels": [{"name": "arginf:checkpoint"}]},
+            {"number": 7, "user": {"login": "bob"}, "labels": []},
+            {"number": 8, "user": {"login": "amy"}, "labels": [{"name": "arginf:proof"}]},
+        ]
+        since = "2026-11-26T03:00:00Z"
+        self.assertEqual(
+            automerge.recent_count(ledger_entries, gap, open_prs, "bob", "proof", since), 3
+        )
+        self.assertEqual(
+            automerge.recent_count(ledger_entries, gap, open_prs, "bob", "checkpoint", since), 1
+        )
+
+    def test_ledger_artifact(self) -> None:
+        import io
+        import zipfile
+
+        from tools import ledger
+
+        entries = [ledger.Entry(1, "al", "statement", "1" * 20, None, "2026-11-27T01:00:00Z")]
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("ledger.json", ledger.dumps(entries))
+        responses = {
+            "runs": {"workflow_runs": [{"id": 9, "conclusion": "success", "head_branch": "main"}]},
+            "artifacts": {
+                "artifacts": [
+                    {"name": "ledger", "expired": False, "archive_download_url": "https://x/zip"}
+                ]
+            },
+        }
+
+        def get_json(url: str) -> object:
+            return responses["runs"] if "/runs?" in url else responses["artifacts"]
+
+        got, started = ledger.read_ledger(
+            get_json, lambda url: buf.getvalue(), "https://api.github.com/repos/o/r", "main.yml"
+        )
+        self.assertEqual(got, entries)
+        self.assertIsNone(started)  # this fake run has no timestamps
+        responses["artifacts"] = {"artifacts": []}
+        with self.assertRaises(ledger.LedgerError):
+            ledger.read_ledger(
+                get_json, lambda url: buf.getvalue(), "https://api.github.com/repos/o/r", "main.yml"
+            )
+        responses["runs"] = {"workflow_runs": []}
+        with self.assertRaises(ledger.LedgerError):
+            ledger.read_ledger(
+                get_json, lambda url: b"", "https://api.github.com/repos/o/r", "main.yml"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

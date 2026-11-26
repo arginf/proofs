@@ -1,5 +1,7 @@
-# Merge new statements, checkpoints and verified proofs on their own. Runs from main after "PR checks" succeed, and
-# never checks out or executes PR code: tools/automerge.py inspects the PR through the API.
+# Queue new statements, checkpoints and verified proofs for merging on their own. Runs from main
+# after "PR checks" succeed on a pull request, and never checks out or executes PR code:
+# tools/automerge.py inspects the PR through the API, labels it with its kind and adds it to the
+# merge queue, which re-runs "PR checks" on the queued commit before anything reaches main.
 name: automerge
 on:
   # Safe here: this job never checks out or runs PR code, re-checks the PR through the API, and
@@ -13,15 +15,14 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.path == '.github/workflows/pr.yml'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # merge the PR
-      pull-requests: write # label and comment on PRs held for review
-      actions: write # dispatch main.yml (merges by GITHUB_TOKEN trigger no push workflows)
+      contents: write # add PRs to the merge queue
+      pull-requests: write # label PRs (kind, needs-review) and comment on held ones
+      actions: read # read the ledger artifact from main's latest run
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
-          fetch-depth: 0 # earned proof caps read main's merge history
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -30,9 +31,24 @@ jobs:
         run: |
           python3 -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
           python3 -m pip install --quiet detoxify==0.5.2 transformers==4.44.2
-      - name: Merge new statements, checkpoints and complete proofs that pass moderation
+      # GitHub does not start workflows for events caused by GITHUB_TOKEN, and that includes the
+      # merge_group run a queued PR needs. So enqueue with the arginf GitHub App's token when it
+      # is configured (vars.ARGINF_APP_ID + secrets.ARGINF_APP_KEY; contents and pull requests:
+      # write on this repository only).
+      - id: app
+        if: ${{ vars.ARGINF_APP_ID != '' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.ARGINF_APP_ID }}
+          private-key: ${{ secrets.ARGINF_APP_KEY }}
+          # Only what queueing needs, on this repository only.
+          repositories: proofs
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: read
+      - name: Queue new statements, checkpoints and complete proofs that pass moderation
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           # workflow_run matches by name, and a PR can add a workflow named "PR checks";
           # tools/automerge.py acts only on runs of .github/workflows/pr.yml for a pull_request.

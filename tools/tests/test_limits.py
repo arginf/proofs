@@ -81,49 +81,6 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(arginf.check_all(root), [])
 
 
-class EarnedTests(unittest.TestCase):
-    """Credit = statements someone else added, where this author's proof was the first."""
-
-    S1, S2, S3 = "111111111111", "222222222222", "333333333333"
-    A1, A2, A3, A4 = "aaaaaaaaaaa1", "aaaaaaaaaaa2", "aaaaaaaaaaa3", "aaaaaaaaaaa4"
-
-    def earned(self, titles: list[str], login: str) -> int:
-        where = {self.A1: self.S1, self.A2: self.S1, self.A3: self.S2, self.A4: self.S3}
-        return automerge.earned_proofs(titles, where.get, login)
-
-    def test_first_proofs_of_other_peoples_statements_count(self) -> None:
-        titles = [
-            f"Merge #1: statement {self.S1} by @alice",
-            f"Merge #2: statement {self.S2} by @alice",
-            f"Merge #3: proof {self.A1} by @Bob",
-            f"Merge #4: proof {self.A2} by @carol",  # second proof of S1: no credit
-            f"Merge #5: proof {self.A3} by @bob",
-        ]
-        self.assertEqual(self.earned(titles, "bob"), 2)
-        self.assertEqual(self.earned(titles, "carol"), 0)
-        self.assertEqual(self.earned(titles, "alice"), 0)
-
-    def test_proving_your_own_statements_earns_nothing(self) -> None:
-        titles = [
-            f"Merge #1: statement {self.S1} by @mallory",
-            f"Merge #2: proof {self.A1} by @mallory",
-        ]
-        self.assertEqual(self.earned(titles, "mallory"), 0)
-
-    def test_extra_proofs_of_one_statement_count_once(self) -> None:
-        titles = [f"Merge #1: proof {self.A1} by @bob", f"Merge #2: proof {self.A2} by @bob"]
-        self.assertEqual(self.earned(titles, "bob"), 1)
-
-    def test_checkpoints_unknown_attempts_and_other_titles_earn_nothing(self) -> None:
-        titles = [
-            f"Merge #1: checkpoint {self.A1} by @bob",
-            "Merge #2: proof bbbbbbbbbbbb by @bob",
-            "Merge pull request #3 from bob/x",
-            f"Merge #4: proof {self.A4} by @bob extra",
-        ]
-        self.assertEqual(self.earned(titles, "bob"), 0)
-
-
 class DecideUsesCaps(unittest.TestCase):
     H = "0123456789abcdef0123"
     A = "ba98765432100123abcd"

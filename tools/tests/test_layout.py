@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import arginf, automerge, layout, safety
+from tools import arginf, automerge, layout, ledger, safety
 
 H = "0123456789abcdef0123"  # 20 hex digits
 A = "fedcba98765432100123"
@@ -253,17 +253,18 @@ class ToolTests(unittest.TestCase):
 
 class EarnedCreditTests(unittest.TestCase):
     def test_old_12_digit_titles_still_count_through_the_rename_map(self) -> None:
-        stmt_new, att_new = H, A
-        renamed = {OLD: stmt_new, "a" * 12: att_new}
-        titles = [
-            f"Merge #1: statement {OLD} by @alice",
-            f"Merge #2: proof {'a' * 12} by @bob",
+        renames = {"statements": {OLD: H}, "attempts": {"a" * 12: A}, "attemptStatement": {A: H}}
+        rows = [
+            (f"Merge #1: statement {OLD} by @alice", "2026-11-20T00:00:00Z"),
+            (f"Merge #2: proof {'a' * 12} by @bob", "2026-11-21T00:00:00Z"),
         ]
-        where = {att_new: stmt_new}
-        self.assertEqual(automerge.earned_proofs(titles, where.get, "bob", renamed), 1)
-        # New 20-digit titles parse too.
-        titles20 = [f"Merge #3: statement {H} by @alice", f"Merge #4: proof {A} by @bob"]
-        self.assertEqual(automerge.earned_proofs(titles20, where.get, "bob"), 1)
+        self.assertEqual(ledger.earned(ledger.from_titles(rows, renames), "bob"), 1)
+        # New 20-digit titles parse too (the attempt's statement comes from the map).
+        rows20 = [
+            (f"Merge #3: statement {H} by @alice", "2026-11-22T00:00:00Z"),
+            (f"Merge #4: proof {A} by @bob", "2026-11-23T00:00:00Z"),
+        ]
+        self.assertEqual(ledger.earned(ledger.from_titles(rows20, renames), "bob"), 1)
 
 
 class DirectoryWidthTests(unittest.TestCase):
@@ -381,20 +382,11 @@ class RenameMapTests(unittest.TestCase):
             first(H, "b" * 20)  # not migrated: its own sharded path
             self.assertEqual(run.call_args.args[0][-1], layout.attempt_path(H, "b" * 20))
 
-    def test_automerge_loads_the_committed_map(self) -> None:
-        import json
-
-        root = Path(tempfile.mkdtemp())
-        self.assertEqual(automerge.load_renames(root), {})
-        (root / "migrations").mkdir()
-        (root / automerge.RENAME_FILE).write_text(json.dumps(self.MAP))
-        self.assertEqual(automerge.load_renames(root), {OLD: H, "a" * 12: A})
-
     def test_the_repo_map_matches_the_tree(self) -> None:
         import json
 
         repo = Path(__file__).resolve().parents[2]
-        path = repo / automerge.RENAME_FILE
+        path = repo / ledger.RENAME_FILE
         if not path.is_file():
             self.skipTest("no rename map")
         data = json.loads(path.read_text())

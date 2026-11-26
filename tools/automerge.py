@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Merge new statements, checkpoints and proofs without a human (Python 3.11+, stdlib only).
+"""Queue new statements, checkpoints and proofs for merging without a human (Python 3.11+).
+
+Accepted PRs get an `arginf:<kind>` label (the ledger's record, see tools/ledger.py) and go into
+GitHub's merge queue, which re-runs PR checks on the queued commit with main before merging.
 
 Runs from the default branch after our own "PR checks" workflow (.github/workflows/pr.yml)
 succeeds (workflow_run), so no PR code executes with write access. It merges a PR that *adds*
@@ -21,8 +24,8 @@ import base64
 import json
 import os
 import re
-import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from tools import arginf, layout, limits, moderation, safety
+from tools import arginf, layout, ledger, limits, moderation, safety
 
 _SORRY = re.compile(r"\bsorry\b")
 
@@ -75,68 +78,48 @@ def _decide_statement(
     return Decision(True, "new Lean-only statement, checks passed", h, kind="statement")
 
 
-# Titles before the 2026-11 layout migration carry 12-digit hashes; RENAME_FILE maps them.
-_MERGE_TITLE_RE = re.compile(
-    rf"^Merge #\d+: (statement|proof|checkpoint) "
-    rf"([0-9a-f]{{{layout.HASH_LEN}}}|[0-9a-f]{{{layout.LEGACY_HASH_LEN}}}) by @([A-Za-z0-9-]+)$"
+_ENQUEUE = (
+    "mutation($id: ID!, $sha: GitObjectID!) { enqueuePullRequest(input: "
+    "{pullRequestId: $id, expectedHeadOid: $sha}) { mergeQueueEntry { position } } }"
 )
-RENAME_FILE = "migrations/2026-11-hash20.json"
 
 
-def load_renames(root: Path) -> dict[str, str]:
-    """Old 12-digit statement and attempt hashes -> their 20-digit ones (empty if none)."""
-    path = root / RENAME_FILE
-    if not path.is_file():
-        return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return {**data.get("statements", {}), **data.get("attempts", {})}
+def enqueue(
+    api: Callable[..., Any], base: str, number: int, node_id: str, sha: str, kind: str
+) -> None:
+    """Label the PR with its kind (the ledger's record), then add it to the merge queue.
+
+    expectedHeadOid makes GitHub refuse if the PR moved past the commit CI checked."""
+    api("POST", f"{base}/issues/{number}/labels", {"labels": [ledger.label_for(kind)]})
+    out = api(
+        "POST",
+        "https://api.github.com/graphql",
+        {"query": _ENQUEUE, "variables": {"id": node_id, "sha": sha}},
+    )
+    if not isinstance(out, dict) or out.get("errors") or not out.get("data"):
+        raise RuntimeError(f"could not enqueue #{number}: {out!r}")
 
 
-def earned_proofs(
-    titles: list[str],
-    statement_of: Callable[[str], str | None],
+def recent_count(
+    entries: list[ledger.Entry],
+    gap: list[ledger.Entry],
+    open_prs: list[dict[str, Any]],
     login: str,
-    renamed: dict[str, str] | None = None,
+    kind: str,
+    since: str,
 ) -> int:
-    """Statements added by someone else where `login`'s proof merged first (titles oldest first).
-
-    Only automerge's own commit titles count. Proving your own statement, or a statement that is
-    already proved, earns nothing, so the cap cannot be farmed. Old 12-digit titles count through
-    `renamed`, so the layout migration keeps everyone's credit."""
-    renamed = renamed or {}
-    creator: dict[str, str] = {}
-    first: dict[str, str] = {}
-    for title in titles:
-        m = _MERGE_TITLE_RE.match(title)
-        if not m:
-            continue
-        kind, who = m.group(1), m.group(3).lower()
-        ref = renamed.get(m.group(2), m.group(2))
-        if kind == "statement":
-            creator.setdefault(ref, who)
-        elif kind == "proof":
-            h = statement_of(ref)
-            if h is not None:
-                first.setdefault(h, who)
+    """Merges of `kind` by `login` since `since` (ledger plus merges after it), plus PRs of that
+    kind still waiting in the queue, so filling the queue cannot get past a cap."""
+    merged = ledger.recent(ledger.merge(entries, gap), login, kind, since)
+    label = ledger.label_for(kind)
     me = login.lower()
-    return sum(1 for h, who in first.items() if who == me and creator.get(h) != me)
-
-
-def _main_titles(root: Path) -> list[str]:
-    """First-parent commit subjects on main, oldest first (needs a full checkout)."""
-    out = subprocess.run(
-        ["git", "log", "--first-parent", "--reverse", "--format=%s", "HEAD"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return out.splitlines()
-
-
-def _statement_of(root: Path) -> Callable[[str], str | None]:
-    where = {a.name: s.name for s in layout.statement_dirs(root) for a in layout.attempt_dirs(s)}
-    return where.get
+    queued = sum(
+        1
+        for p in open_prs
+        if str(p["user"]["login"]).lower() == me
+        and label in [str(lab["name"]) for lab in p.get("labels", [])]
+    )
+    return merged + queued
 
 
 def trusted_run(path: str, event: str) -> bool:
@@ -312,24 +295,50 @@ def main(argv: list[str] | None = None) -> int:
         meta = _api("GET", f"{base}/contents/{path}?ref={sha}", token)
         return base64.b64decode(meta["content"]).decode("utf-8")
 
+    # Who merged what comes from the ledger (built by main from GitHub's records), plus PRs
+    # merged since that run and PRs still queued. No ledger yet: count the last 24 h directly.
+    now = datetime.now(UTC)
+    since = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        entries, started = ledger.read_ledger(
+            lambda url: _api("GET", url, token),
+            lambda url: ledger.download(url, token),
+            base,
+            ledger.LEDGER_WORKFLOW,
+        )
+    except (ledger.LedgerError, OSError, KeyError) as err:
+        print(f"no ledger ({err}); counting the last 24 h from the API, no earned credit")
+        entries, started = [], None
+    gap_since = max(since, started or since)
+    q = f"repo:{repo} is:pr is:merged author:{login} merged:>={gap_since}"
+    gap: list[ledger.Entry] = []
+    for item in all_pages(
+        lambda page: _api(
+            "GET",
+            "https://api.github.com/search/issues?"
+            + urllib.parse.urlencode({"q": q, "per_page": 100, "page": page}),
+            token,
+        )["items"],
+        max_pages=10,
+    ):
+        labels = [str(lab["name"]) for lab in item.get("labels", [])]
+        if ledger.kind_from_labels(labels) is None:
+            continue
+        n = int(item["number"])
+        merged_pr = _api("GET", f"{base}/pulls/{n}", token)
+
+        def files_page(page: int, n: int = n) -> list[Any]:
+            return list(_api("GET", f"{base}/pulls/{n}/files?per_page=100&page={page}", token))
+
+        names = [str(f["filename"]) for f in all_pages(files_page)]
+        if int(merged_pr.get("changed_files", -1)) != len(names):
+            continue
+        en = ledger.entry_from_pr(n, login, labels, merged_pr.get("merged_at"), names)
+        if en is not None:
+            gap.append(en)
+
     def recent(kind: str) -> Callable[[], int]:
-        """Merges of this kind for this author in the last 24 h (from our commit titles)."""
-
-        def count() -> int:
-            since = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            commits = all_pages(
-                lambda page: _api(
-                    "GET", f"{base}/commits?sha=main&since={since}&per_page=100&page={page}", token
-                )
-            )
-            firsts = [c["commit"]["message"].split("\n", 1)[0] for c in commits]
-            return sum(
-                1
-                for t in firsts
-                if t.startswith("Merge #") and f": {kind} " in t and t.endswith(f"by @{login}")
-            )
-
-        return count
+        return lambda: recent_count(entries, gap, open_prs, login, kind, since)
 
     def account_age_days() -> float:
         user = _api("GET", f"https://api.github.com/users/{login}", token)
@@ -340,11 +349,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Read from main (this job's checkout), never from the PR. An invalid file stops here.
     root = Path.cwd()
-    caps = limits.caps_for(
-        limits.load(root),
-        login,
-        earned_proofs(_main_titles(root), _statement_of(root), login, load_renames(root)),
-    )
+    caps = limits.caps_for(limits.load(root), login, ledger.earned(entries, login))
     print(f"caps for @{login}: {caps}")
     d = decide(
         files,
@@ -383,23 +388,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"held for review: {'; '.join(reasons)}")
         return 0
-    _api(
-        "PUT",
-        f"{base}/pulls/{number}/merge",
-        token,
-        {
-            "sha": sha,
-            "merge_method": "merge",
-            "commit_title": (
-                f"Merge #{number}: statement {d.theorem} by @{login}"
-                if d.kind == "statement"
-                else f"Merge #{number}: {d.kind} {d.attempt} by @{login}"
-            ),
-        },
+    enqueue(
+        lambda method, url, body=None: _api(method, url, token, body),
+        base,
+        int(number),
+        str(pr["node_id"]),
+        sha,
+        d.kind,
     )
-    # Merges made with GITHUB_TOKEN don't trigger push workflows, so publish explicitly.
-    _api("POST", f"{base}/actions/workflows/main.yml/dispatches", token, {"ref": "main"})
-    print(f"merged #{number} and started the main workflow")
+    print(f"queued #{number} ({d.kind}); the merge queue re-checks it with main before merging")
     return 0
 
 
