@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -22,6 +23,8 @@ import secrets
 import subprocess
 import sys
 import tomllib
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -46,10 +49,12 @@ SHARE_PREFIXES = {
     "g.co": "/gemini/share/",
     "grok.com": "/share/",
 }
-ARCHIVE_PREFIX = "https://web.archive.org/web/"
-READING_KEYS = frozenset({"model", "chat", "text", "archive"})
+ARCHIVE_RE = re.compile(r"https://web\.archive\.org/web/(\d{14})/(https://\S+)")
+READING_KEYS = frozenset({"model", "archive", "text"})
 READINGS_MAX = 10
-READING_TEXT_MAX = 1000
+READING_TEXT_MAX = 5000
+PROMPT_TEMPLATE = "Translate the following Lean statement into natural language:\n```\n{lean}\n```"
+FETCH_MAX_BYTES = 20_000_000
 _MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}")
 CURATION_KEYS = ("featured", "examples")
 _STATEMENT_RE = re.compile(r"(?m)^def\s+statement\s*:\s*Prop\s*:=")
@@ -277,27 +282,90 @@ def _share_link_ok(url: str) -> bool:
     )
 
 
+def _archive_parts(url: str) -> tuple[str, str] | None:
+    """(timestamp, share link) for a Wayback snapshot of an allowlisted share link."""
+    m = ARCHIVE_RE.fullmatch(url)
+    if not m or not _share_link_ok(m.group(2)):
+        return None
+    return m.group(1), m.group(2)
+
+
 def _reading_errors(where: str, r: object) -> list[str]:
     if not isinstance(r, dict):
         return [f"{where}: each [[reading]] must be a table"]
     errors: list[str] = []
     unknown = set(r) - READING_KEYS
     if unknown:
-        errors.append(f"{where}: unknown keys {sorted(unknown)}")
-    model, chat, text = r.get("model"), r.get("chat"), r.get("text")
+        errors.append(f"{where}: unknown keys {sorted(unknown)} (allowed: model, archive, text)")
+    model, archive, text = r.get("model"), r.get("archive"), r.get("text")
     if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
         errors.append(f"{where}: model is required (the model that wrote the reading)")
-    if not isinstance(chat, str) or not _share_link_ok(chat):
-        errors.append(f"{where}: chat must be a public share link ({', '.join(SHARE_PREFIXES)})")
+    if not isinstance(archive, str) or _archive_parts(archive) is None:
+        errors.append(
+            f"{where}: archive must be https://web.archive.org/web/<14-digit timestamp>/"
+            f"<public share link on {', '.join(SHARE_PREFIXES)}>"
+        )
     if not isinstance(text, str) or not text.strip() or len(text) > READING_TEXT_MAX:
-        errors.append(f"{where}: text must be 1-{READING_TEXT_MAX} characters")
-    elif re.search(r"[<>\n\r]|https?:|www\.", text):
-        errors.append(f"{where}: text must be plain prose (no links, markup or line breaks)")
-    archive = r.get("archive")
-    if archive is not None and (
-        not isinstance(archive, str) or not archive.startswith(ARCHIVE_PREFIX)
-    ):
-        errors.append(f"{where}: archive must be a {ARCHIVE_PREFIX} snapshot")
+        errors.append(f"{where}: text must be the model's exact output, 1-{READING_TEXT_MAX} chars")
+    return errors
+
+
+def translation_prompt(root: Path, h: str) -> str:
+    """The exact prompt a reading's chat must contain: the whole Statement.lean, verbatim."""
+    lean = (root / ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8").strip()
+    return PROMPT_TEMPLATE.format(lean=lean)
+
+
+def _page_text(page: str) -> str:
+    """Archived chat pages embed messages as (possibly nested) escaped JSON inside HTML."""
+    text = html.unescape(page)
+    for _ in range(2):
+        text = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text)
+        text = text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "")
+        text = text.replace('\\"', '"').replace("\\/", "/").replace("\\\\", "\\")
+    return " ".join(text.split())
+
+
+def _fetch(url: str) -> str:
+    if not url.startswith("https://web.archive.org/web/"):
+        raise OSError("refusing to fetch outside web.archive.org")
+    req = urllib.request.Request(  # noqa: S310 - https://web.archive.org only, checked above
+        url, headers={"User-Agent": "arginf-ci (+https://arginf.com)"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - fixed https host above
+        data: bytes = resp.read(FETCH_MAX_BYTES + 1)
+    if len(data) > FETCH_MAX_BYTES:
+        raise OSError("archived page too large")
+    return data.decode("utf-8", errors="replace")
+
+
+def verify_translation(root: Path, h: str, fetch: Callable[[str], str] | None = None) -> list[str]:
+    """Check each reading's archived chat: the exact prompt, then the exact output after it."""
+    errors = check_translation(root, h)
+    if errors:
+        return errors
+    get = fetch or _fetch
+    raw: dict[str, Any] = tomllib.loads(
+        (root / TRANSLATION_DIR / f"{h}.toml").read_text(encoding="utf-8")
+    )
+    prompt = " ".join(translation_prompt(root, h).split())
+    for i, r in enumerate(raw["reading"]):
+        where = f"{TRANSLATION_DIR}/{h}.toml reading {i + 1}"
+        parts = _archive_parts(r["archive"])
+        assert parts is not None
+        ts, share = parts
+        url = f"https://web.archive.org/web/{ts}id_/{share}"
+        try:
+            page = _page_text(get(url))
+        except (OSError, ValueError) as err:
+            errors.append(f"{where}: could not fetch {url}: {err}")
+            continue
+        at = page.find(prompt)
+        if at < 0:
+            errors.append(f"{where}: archived chat does not contain the exact prompt")
+            continue
+        if page.find(" ".join(str(r["text"]).split()), at + len(prompt)) < 0:
+            errors.append(f"{where}: text does not match the model's output after the prompt")
     return errors
 
 
@@ -328,8 +396,7 @@ def load_readings(root: Path, h: str) -> list[dict[str, Any]]:
         return []
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     return [
-        {"model": r["model"], "chat": r["chat"], "text": r["text"], "archive": r.get("archive")}
-        for r in raw["reading"]
+        {"model": r["model"], "archive": r["archive"], "text": r["text"]} for r in raw["reading"]
     ]
 
 
@@ -709,6 +776,10 @@ def main(argv: list[str] | None = None) -> int:
     p_fast = sub.add_parser("fast", help="compile + audit a core-only folder without Mathlib")
     p_fast.add_argument("theorem")
     p_fast.add_argument("--attempt", default=None)
+    p_prompt = sub.add_parser("prompt", help="print the exact translation prompt for a statement")
+    p_prompt.add_argument("theorem")
+    p_verify = sub.add_parser("verify-translation", help="check readings against archived chats")
+    p_verify.add_argument("theorem")
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="default: every folder with a Proof.lean")
     p_audit.add_argument("--attempt", default=None, help="audit this complete attempt instead")
@@ -759,6 +830,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "promote":
             promote(root, args.theorem, args.attempt)
             print(f"wrote {ROOT_DIR}/{args.theorem}/Proof.lean")
+        elif args.cmd == "prompt":
+            print(translation_prompt(root, args.theorem))
+        elif args.cmd == "verify-translation":
+            errors = verify_translation(root, args.theorem)
+            for e in errors:
+                print(f"error: {e}", file=sys.stderr)
+            if errors:
+                return 1
+            print("ok: archived chats show the exact prompt and output")
         elif args.cmd == "fast":
             result = fast_check(root, args.theorem, args.attempt)
             if result is None:

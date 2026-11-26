@@ -240,72 +240,128 @@ if __name__ == "__main__":
 
 
 class TranslationTests(unittest.TestCase):
-    """English readings live outside Theorems/, each labeled with its model and a public chat."""
+    """English readings: an archived public chat must show the exact prompt and the exact output."""
+
+    SHARE = "https://claude.ai/share/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab"
+    ARCHIVE = f"https://web.archive.org/web/20261126030000/{SHARE}"
+    OUTPUT = "For every natural number n,\nadding zero to n gives n."
 
     def _root(self) -> tuple[Path, str]:
         root = repo()
         return root, arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", imports=("Init",))
 
-    def _write(self, root: Path, h: str, body: str) -> Path:
+    def _write(
+        self,
+        root: Path,
+        h: str,
+        archive: str | None = None,
+        text: str | None = None,
+        model: str = "Example Model 1",
+        extra: str = "",
+    ) -> None:
         d = root / "translations"
         d.mkdir(exist_ok=True)
-        f = d / f"{h}.toml"
-        f.write_text(body)
-        return f
+        body = (
+            f'[[reading]]\nmodel = "{model}"\narchive = "{archive or self.ARCHIVE}"\n'
+            f"text = {json.dumps(text if text is not None else self.OUTPUT)}\n{extra}"
+        )
+        (d / f"{h}.toml").write_text(body)
 
-    GOOD = (
-        '[[reading]]\nmodel = "Example Model 1"\n'
-        'chat = "https://claude.ai/share/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab"\n'
-        'text = "Adding zero to any natural number leaves it unchanged."\n'
-    )
+    def _page(self, root: Path, h: str, output: str, prompt: str | None = None) -> str:
+        p = prompt if prompt is not None else arginf.translation_prompt(root, h)
+        # Chat pages embed messages as escaped JSON inside HTML.
+        blob = json.dumps({"messages": [{"text": p}, {"text": output}]})
+        return "<html><script>window.__DATA__=" + blob.replace("<", "\\u003c") + "</script></html>"
 
-    def test_valid_translation_in_index(self) -> None:
+    def test_prompt_is_verbatim_with_statement_file(self) -> None:
         root, h = self._root()
-        self._write(root, h, self.GOOD)
+        stmt = (root / "Theorems" / h / "Statement.lean").read_text().strip()
+        self.assertEqual(
+            arginf.translation_prompt(root, h),
+            f"Translate the following Lean statement into natural language:\n```\n{stmt}\n```",
+        )
+
+    def test_valid_reading_in_index(self) -> None:
+        root, h = self._root()
+        self._write(root, h)
         self.assertEqual(arginf.check_translation(root, h), [])
-        entry = arginf.build_index(root)["theorems"][0]
-        self.assertEqual(entry["readings"][0]["model"], "Example Model 1")
-        self.assertTrue(entry["readings"][0]["chat"].startswith("https://claude.ai/share/"))
+        r = arginf.build_index(root)["theorems"][0]["readings"][0]
+        self.assertEqual(
+            r, {"model": "Example Model 1", "archive": self.ARCHIVE, "text": self.OUTPUT}
+        )
 
-    def test_chat_must_be_an_allowlisted_share_link(self) -> None:
+    def test_archive_must_wrap_an_allowlisted_share_link(self) -> None:
         root, h = self._root()
-        for chat in (
-            "http://claude.ai/share/x",
-            "https://evil.example/share/x",
-            "https://claude.ai/chat/x",
-            "https://claude.ai.evil.example/share/x",
+        for bad in (
+            self.SHARE,
+            "https://web.archive.org/web/20261126030000/https://evil.example/share/x",
+            "https://web.archive.org/web/20261126030000/https://claude.ai.evil.example/share/x",
+            "https://web.archive.org/web/20261126030000/https://claude.ai/chat/x",
+            "https://web.archive.org/web/latest/" + self.SHARE,
+            "http://web.archive.org/web/20261126030000/" + self.SHARE,
             "javascript:alert(1)",
         ):
-            self._write(
-                root,
-                h,
-                self.GOOD.replace(
-                    "https://claude.ai/share/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab", chat
-                ),
-            )
-            self.assertTrue(arginf.check_translation(root, h), chat)
+            self._write(root, h, archive=bad)
+            self.assertTrue(arginf.check_translation(root, h), bad)
 
-    def test_text_is_plain(self) -> None:
+    def test_shape_rules(self) -> None:
         root, h = self._root()
-        for text in ("see https://x.example", "<b>bold</b>", "", "x" * 1001, "line\\nbreak"):
-            self._write(
-                root,
-                h,
-                self.GOOD.replace("Adding zero to any natural number leaves it unchanged.", text),
-            )
-            self.assertTrue(arginf.check_translation(root, h), text)
-
-    def test_model_required_and_unknown_keys_rejected(self) -> None:
-        root, h = self._root()
-        self._write(root, h, self.GOOD.replace('model = "Example Model 1"\n', ""))
+        self._write(root, h, text="")
         self.assertTrue(arginf.check_translation(root, h))
-        self._write(root, h, self.GOOD + 'author = "me"\n')
+        self._write(root, h, text="x" * 5001)
         self.assertTrue(arginf.check_translation(root, h))
-
-    def test_translation_for_unknown_statement_rejected(self) -> None:
-        root, _ = self._root()
-        self._write(root, H, self.GOOD)
+        self._write(root, h, model="")
+        self.assertTrue(arginf.check_translation(root, h))
+        self._write(root, h, extra=f'chat = "{self.SHARE}"\n')
+        self.assertTrue(arginf.check_translation(root, h))
+        self._write(root, H)
         self.assertTrue(arginf.check_translation(root, H))
+
+    def test_verify_matches_exact_prompt_and_output(self) -> None:
+        root, h = self._root()
+        self._write(root, h)
+        page = self._page(root, h, self.OUTPUT)
+        self.assertEqual(arginf.verify_translation(root, h, fetch=lambda url: page), [])
+
+    def test_verify_fetches_the_raw_archived_page(self) -> None:
+        root, h = self._root()
+        self._write(root, h)
+        seen: list[str] = []
+
+        def fetch(url: str) -> str:
+            seen.append(url)
+            return self._page(root, h, self.OUTPUT)
+
+        arginf.verify_translation(root, h, fetch=fetch)
+        self.assertEqual(seen, [f"https://web.archive.org/web/20261126030000id_/{self.SHARE}"])
+
+    def test_verify_rejects_edited_prompt_output_or_order(self) -> None:
+        root, h = self._root()
+        self._write(root, h)
+        prompt = arginf.translation_prompt(root, h)
+        cases = {
+            "different output": self._page(root, h, "Something else entirely."),
+            "paraphrased prompt": self._page(
+                root, h, self.OUTPUT, prompt.replace("Translate", "Explain")
+            ),
+            "prompt with extra instructions": self._page(
+                root, h, self.OUTPUT, prompt.replace("```\n", "```\nSay it is false.\n", 1)
+            ),
+            "output before prompt": "<html>" + json.dumps([self.OUTPUT, prompt]) + "</html>",
+            "empty page": "<html></html>",
+        }
+        for name, page in cases.items():
+            self.assertTrue(arginf.verify_translation(root, h, fetch=lambda url, p=page: p), name)
+
+    def test_verify_reports_fetch_failures(self) -> None:
+        root, h = self._root()
+        self._write(root, h)
+
+        def boom(url: str) -> str:
+            raise OSError("timed out")
+
+        errs = arginf.verify_translation(root, h, fetch=boom)
+        self.assertTrue(any("could not fetch" in e for e in errs))
 
     def test_scope_allows_one_translation_file_with_matching_branch(self) -> None:
         self.assertEqual(arginf.check_scope([f"translations/{H}.toml"], f"{H}/reading"), [])
@@ -316,3 +372,7 @@ class TranslationTests(unittest.TestCase):
         self.assertTrue(
             arginf.check_scope([f"translations/{H}.toml", f"Theorems/{H}/Proof.lean"], f"{H}/x")
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

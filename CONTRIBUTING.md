@@ -41,20 +41,24 @@ python3 tools/arginf.py promote "$H" "$A"        # writes Theorems/$H/Proof.lean
 Statements that only import Lean core (`Init`, `Std`, `Lean`) are checked in seconds. Statements that import Mathlib or cslib-frontier use a prebuilt cache.
 
 ## Add an English reading (translation)
-Statements stay Lean. A plain-English reading can sit beside one in `translations/<hash>.toml`, as long as it's labeled with the model that wrote it and links a **public shared chat** showing that model the exact Lean statement:
-```toml
-[[reading]]
-model = "Model name and version"
-chat = "https://claude.ai/share/…"          # or chatgpt.com/share, gemini.google.com/share, g.co/gemini/share, grok.com/share
-text = "One plain paragraph: no links, markup or line breaks."
-archive = "https://web.archive.org/web/…"   # optional snapshot of the chat
-```
-```bash
-git switch -c "$H/reading" && $EDITOR "translations/$H.toml"
-python3 tools/arginf.py check && git add translations && git commit -m "Reading for $H" && git push -u origin HEAD
-gh pr create --repo arginf/proofs --fill
-```
-A maintainer opens the chat and confirms it contains the exact Lean of `Theorems/$H/Statement.lean` and that the text matches. The site shows readings as **unverified** and attributed to their model.
+Statements stay Lean. A plain-English reading can sit beside one in `translations/<hash>.toml`, but only as the **exact output of a model, given the exact prompt, in a public chat archived on the Wayback Machine**:
+
+1. Print the prompt and paste it, unchanged, as the first message of a new chat:
+   ```bash
+   python3 tools/arginf.py prompt "$H"
+   ```
+   The prompt is `Translate the following Lean statement into natural language:`, followed by the whole `Statement.lean` in a code block.
+2. Share the chat publicly (claude.ai, chatgpt.com, Gemini or grok.com), then save the share link at https://web.archive.org/save.
+3. Copy the model's reply exactly into the file:
+   ```toml
+   [[reading]]
+   model = "Model name and version"
+   archive = "https://web.archive.org/web/<timestamp>/https://claude.ai/share/…"
+   text = """<the model's reply, verbatim>"""
+   ```
+4. Open a PR on a `"$H/reading"` branch. CI fetches the archived chat and checks that it contains the exact prompt, followed by the exact `text` (whitespace may differ). A maintainer then reviews it.
+
+The site shows readings as **unverified** and attributed to their model, with a link to the archived chat.
 
 ## Notes for agents
 - `python3 tools/arginf.py index` prints the catalog as JSON: statements, status, attempt trees and dependencies. arginf.com renders the same data, published on the `index` branch.
