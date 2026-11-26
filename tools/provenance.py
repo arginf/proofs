@@ -21,23 +21,39 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from tools import arginf
+from tools import arginf, layout
 
 type Commit = tuple[str, str]  # (sha, ISO date)
 type PR = tuple[int, str, int]  # (number, author login, 👍)
 
 
 def attempt_paths(root: Path) -> list[tuple[str, str]]:
-    base = root / arginf.ROOT_DIR
-    out: list[tuple[str, str]] = []
-    for t in sorted(p for p in base.iterdir() if arginf.HASH_RE.match(p.name)):
-        adir = t / arginf.ATTEMPT_DIR
-        if adir.is_dir():
-            out += [
-                (t.name, a.name)
-                for a in sorted(adir.iterdir())
-                if arginf.HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
-            ]
+    return [
+        (t.name, a.name)
+        for t in layout.statement_dirs(root)
+        if arginf.HASH_RE.match(t.name)
+        for a in layout.attempt_dirs(t)
+        if arginf.HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
+    ]
+
+
+def legacy_paths(renames: dict[str, Any]) -> dict[tuple[str, str], str]:
+    """(statement, attempt) -> the attempt's path before the 2026-11 layout migration.
+
+    Moving an attempt makes git see a new file, so its first commit would be the migration's.
+    Provenance asks git about the old path instead, keeping the original merge, PR and author."""
+    new_of = renames.get("statements", {})
+    old_of_attempt = {new: old for old, new in renames.get("attempts", {}).items()}
+    old_of_statement = {new: old for old, new in new_of.items()}
+    stmt_of = renames.get("attemptStatement", {})
+    out: dict[tuple[str, str], str] = {}
+    for a_new, a_old in old_of_attempt.items():
+        h_new = stmt_of.get(a_new)
+        h_old = old_of_statement.get(h_new) if h_new else None
+        if h_new and h_old:
+            out[(h_new, a_new)] = (
+                f"{arginf.ROOT_DIR}/{h_old}/{arginf.ATTEMPT_DIR}/{a_old}/Attempt.lean"
+            )
     return out
 
 
@@ -87,9 +103,13 @@ def _order(dated: list[dict[str, Any]], p: dict[str, Any]) -> int:
     return next((i for i, x in enumerate(ordered) if x["hash"] == p["hash"]), len(ordered))
 
 
-def _git_first_commit(root: Path) -> Callable[[str, str], Commit | None]:
+def _git_first_commit(
+    root: Path, legacy: dict[tuple[str, str], str] | None = None
+) -> Callable[[str, str], Commit | None]:
+    legacy = legacy or {}
+
     def run(h: str, a: str) -> Commit | None:
-        path = f"{arginf.ROOT_DIR}/{h}/{arginf.ATTEMPT_DIR}/{a}/Attempt.lean"
+        path = legacy.get((h, a)) or layout.attempt_path(h, a)
         out = subprocess.run(
             ["git", "log", "--diff-filter=A", "--format=%H %cI", "--", path],
             cwd=root, capture_output=True, text=True, check=True,
@@ -133,9 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     root = Path.cwd()
     repo = os.environ.get("GITHUB_REPOSITORY", "arginf/proofs")
     try:
+        renames_file = root / "migrations" / "2026-11-hash20.json"
+        renames = json.loads(renames_file.read_text()) if renames_file.is_file() else {}
         prov = collect(
             attempt_paths(root),
-            _git_first_commit(root),
+            _git_first_commit(root, legacy_paths(renames)),
             _github_pr_for(repo, os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")),
         )
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError) as err:

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tools import arginf
+from tools import arginf, layout
 
 PROMPT = (
     "Translate the following Lean statement into the language of a mathematics research paper. "
@@ -111,7 +111,7 @@ def load_models(path: Path) -> Allowlist:
 def user_message(root: Path, h: str) -> str:
     """The fixed prompt around Statement.lean, keeping imports (they give names their meaning)
     and dropping the namespace/end lines, which only carry our hash."""
-    text = (root / arginf.ROOT_DIR / h / "Statement.lean").read_text(encoding="utf-8")
+    text = (layout.statement_dir(root, h) / "Statement.lean").read_text(encoding="utf-8")
     lines = [ln for ln in text.splitlines() if not re.match(r"\s*(namespace|end)\b", ln)]
     lean = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     return PROMPT.replace("{lean}", lean)  # not str.format: the example contains TeX braces
@@ -325,9 +325,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         allow = load_models(root / "models.toml")
         model = allow.model(args.model)
-        hashes = args.hashes or sorted(
-            p.name for p in (root / arginf.ROOT_DIR).iterdir() if arginf.HASH_RE.match(p.name)
-        )
+        hashes = args.hashes or [
+            p.name for p in layout.statement_dirs(root) if arginf.HASH_RE.match(p.name)
+        ]
         existing: list[dict[str, Any]] = []
         if args.existing and args.existing.is_file():
             existing = json.loads(args.existing.read_text(encoding="utf-8"))

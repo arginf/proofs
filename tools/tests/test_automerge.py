@@ -2,12 +2,12 @@
 
 import unittest
 
-from tools import automerge
+from tools import automerge, layout
 
-H = "0123456789ab"
-A = "ba9876543210"
+H = "0123456789abcdef0123"
+A = "ba98765432100123abcd"
 COMPLETE = (
-    f"import Theorems.«{H}».Statement\n\nnamespace X\n\n"
+    f"import {layout.statement_module(H)}\n\nnamespace X\n\n"
     f"theorem proof : Theorems.«{H}».statement :=\n  trivial\n\nend X\n"
 )
 PARTIAL = COMPLETE.replace("trivial", "by\n  sorry")
@@ -18,7 +18,7 @@ def files(*paths: str, status: str = "added") -> list[dict[str, str]]:
 
 
 ATTEMPT = files(
-    f"Theorems/{H}/attempts/{A}/Attempt.lean", f"Theorems/{H}/attempts/{A}/attempt.toml"
+    layout.attempt_path(H, A, "Attempt.lean"), layout.attempt_path(H, A, "attempt.toml")
 )
 
 
@@ -79,26 +79,26 @@ class DecideTests(_DecideBase):
     def test_other_files_never_auto_merge(self) -> None:
         self.assertFalse(self.ok(ATTEMPT + files(".github/workflows/pr.yml")).merge)
         self.assertFalse(self.ok(ATTEMPT + files("curation.toml")).merge)
-        self.assertFalse(self.ok(ATTEMPT + files(f"Theorems/{H}/Statement.lean")).merge)
+        self.assertFalse(self.ok(ATTEMPT + files(layout.statement_path(H))).merge)
 
     def test_only_additions_of_one_attempt(self) -> None:
         self.assertFalse(self.ok(files(*[f["filename"] for f in ATTEMPT], status="modified")).merge)
         other = files(
-            f"Theorems/{H}/attempts/{H}/Attempt.lean", f"Theorems/{H}/attempts/{H}/attempt.toml"
+            layout.attempt_path(H, H, "Attempt.lean"), layout.attempt_path(H, H, "attempt.toml")
         )
         self.assertFalse(self.ok(ATTEMPT + other).merge)
-        self.assertFalse(self.ok(files(f"Theorems/{H}/attempts/{A}/Attempt.lean")).merge)  # no toml
+        self.assertFalse(self.ok(files(layout.attempt_path(H, A, "Attempt.lean"))).merge)  # no toml
 
     def test_statement_must_already_exist_on_main(self) -> None:
         self.assertFalse(self.ok(ATTEMPT, exists=False).merge)
 
     def test_new_statement_merges_on_its_own(self) -> None:
-        d = self.ok(files(f"Theorems/{H}/Statement.lean"), lean=STATEMENT, exists=False)
+        d = self.ok(files(layout.statement_path(H)), lean=STATEMENT, exists=False)
         self.assertTrue(d.merge, d.reason)
         self.assertEqual(d.kind, "statement")
 
     def test_statement_guardrails(self) -> None:
-        stmt = files(f"Theorems/{H}/Statement.lean")
+        stmt = files(layout.statement_path(H))
         self.assertFalse(self.ok(stmt, lean=STATEMENT.replace("True", "sorry"), exists=False).merge)
         bad_import = STATEMENT.replace("import Mathlib", "import Mathlib\nimport SomeOther.Lib")
         self.assertFalse(self.ok(stmt, lean=bad_import, exists=False).merge)
@@ -118,13 +118,13 @@ class DecideTests(_DecideBase):
         self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=True).merge)  # already on main
 
     def test_statement_and_attempt_together_wait_for_a_maintainer(self) -> None:
-        both = files(f"Theorems/{H}/Statement.lean") + ATTEMPT
+        both = files(layout.statement_path(H)) + ATTEMPT
         self.assertFalse(self.ok(both, exists=False).merge)
 
     def test_path_tricks(self) -> None:
         bad = files(
-            f"Theorems/{H}/attempts/{A}/../../../lakefile.toml",
-            f"Theorems/{H}/attempts/{A}/attempt.toml",
+            f"Theorems/{H[:2]}/{H}/attempts/{A[:2]}/{A}/../../../../../lakefile.toml",
+            layout.attempt_path(H, A, "attempt.toml"),
         )
         self.assertFalse(self.ok(bad).merge)
 
@@ -144,12 +144,12 @@ class HardeningTests(_DecideBase):
                 )
 
     def test_statement_with_helper_never_merges(self) -> None:
-        stmt = files(f"Theorems/{H}/Statement.lean")
+        stmt = files(layout.statement_path(H))
         lean = STATEMENT.replace("def statement", "def helper : Prop := False\n\ndef statement")
         self.assertFalse(self.ok(stmt, lean=lean, exists=False).merge)
 
     def test_statement_namespace_must_match_its_folder(self) -> None:
-        stmt = files(f"Theorems/{A}/Statement.lean")
+        stmt = files(layout.statement_path(A))
         self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=False).merge)
 
     def test_truncated_file_list_never_merges(self) -> None:
@@ -159,7 +159,7 @@ class HardeningTests(_DecideBase):
     def test_new_accounts_wait_for_a_maintainer(self) -> None:
         young = automerge.MIN_ACCOUNT_AGE_DAYS - 0.5
         self.assertFalse(self.ok(ATTEMPT, account_age_days=young).merge)
-        stmt = files(f"Theorems/{H}/Statement.lean")
+        stmt = files(layout.statement_path(H))
         self.assertFalse(self.ok(stmt, lean=STATEMENT, exists=False, account_age_days=young).merge)
 
     def test_only_our_own_pr_workflow_counts(self) -> None:

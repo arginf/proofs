@@ -47,7 +47,7 @@ jobs:
           fi
           python3 tools/arginf.py check --base "$BASE_SHA" --branch "$HEAD_REF"
           echo "hash=${HEAD_REF%%/*}" >> "$GITHUB_OUTPUT"
-          ATTEMPT=$(git diff --name-only "$BASE_SHA...HEAD" | sed -nE 's#^Theorems/[0-9a-f]{12}/attempts/([0-9a-f]{12})/.*#\1#p' | sort -u | head -1)
+          ATTEMPT=$(git diff --name-only "$BASE_SHA...HEAD" | sed -nE 's#^Theorems/[0-9a-f]{2}/[0-9a-f]{20}/attempts/[0-9a-f]{2}/([0-9a-f]{20})/.*#\1#p' | sort -u | head -1)
           echo "attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
   lean:
     needs: scope
@@ -74,7 +74,7 @@ jobs:
         run: |
           if [ -z "$HASH" ]; then echo "full=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           set +e
-          if [ -n "$ATTEMPT" ] && ! grep -qw sorry "Theorems/$HASH/attempts/$ATTEMPT/Attempt.lean"; then
+          if [ -n "$ATTEMPT" ] && ! grep -qw sorry "$(python3 tools/arginf.py path "$HASH" "$ATTEMPT")/Attempt.lean"; then
             python3 tools/arginf.py fast "$HASH" --attempt "$ATTEMPT"
           else
             python3 tools/arginf.py fast "$HASH"

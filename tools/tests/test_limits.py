@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import arginf, automerge, limits
+from tools import arginf, automerge, layout, limits
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -125,13 +125,13 @@ class EarnedTests(unittest.TestCase):
 
 
 class DecideUsesCaps(unittest.TestCase):
-    H = "0123456789ab"
-    A = "ba9876543210"
+    H = "0123456789abcdef0123"
+    A = "ba98765432100123abcd"
 
     def decide(self, lean: str, caps: limits.Caps, recent: int) -> automerge.Decision:
         fs = [
-            {"filename": f"Theorems/{self.H}/attempts/{self.A}/Attempt.lean", "status": "added"},
-            {"filename": f"Theorems/{self.H}/attempts/{self.A}/attempt.toml", "status": "added"},
+            {"filename": layout.attempt_path(self.H, self.A, "Attempt.lean"), "status": "added"},
+            {"filename": layout.attempt_path(self.H, self.A, "attempt.toml"), "status": "added"},
         ]
         return automerge.decide(
             fs,
@@ -147,7 +147,7 @@ class DecideUsesCaps(unittest.TestCase):
 
     def test_raised_and_lowered_caps(self) -> None:
         proof = (
-            f"import Theorems.«{self.H}».Statement\n\nnamespace X\n\n"
+            f"import {layout.statement_module(self.H)}\n\nnamespace X\n\n"
             f"theorem proof : Theorems.«{self.H}».statement :=\n  trivial\n\nend X\n"
         )
         partial = proof.replace("trivial", "by\n  sorry")

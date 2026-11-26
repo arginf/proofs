@@ -1,0 +1,24 @@
+{
+ "attemptStatement": {
+  "32f0c7cbc47e2ccfe8d1": "c72a0c096b0abaae6598",
+  "5a9f9cd7c481653f6811": "bdb47f9dc7199f64b3dc",
+  "5d6c454c11fd4dbe4979": "23a9ca539bfc53b51900",
+  "ec82cdf0df73c7321edc": "bdb47f9dc7199f64b3dc"
+ },
+ "attempts": {
+  "4261bc11c752": "5a9f9cd7c481653f6811",
+  "5d90c2692c3e": "5d6c454c11fd4dbe4979",
+  "bda14aeb9f48": "32f0c7cbc47e2ccfe8d1",
+  "edea6db571ea": "ec82cdf0df73c7321edc"
+ },
+ "hashLength": {
+  "from": 12,
+  "to": 20
+ },
+ "statements": {
+  "23a9ca539bfc": "23a9ca539bfc53b51900",
+  "bdb47f9dc719": "bdb47f9dc7199f64b3dc",
+  "c72a0c096b0a": "c72a0c096b0abaae6598",
+  "ccea3a5ebd7d": "ccea3a5ebd7dad462c47"
+ }
+}

@@ -3,10 +3,10 @@
 import unittest
 from pathlib import Path
 
-from tools import provenance
+from tools import layout, provenance
 
-H = "0123456789ab"
-A1, A2, A3 = "a" * 12, "b" * 12, "c" * 12
+H = "0123456789abcdef0123"
+A1, A2, A3 = "a" * 20, "b" * 20, "c" * 20
 
 
 def index() -> dict[str, object]:
@@ -86,8 +86,8 @@ class ProvenanceTests(unittest.TestCase):
         import tempfile
 
         root = Path(tempfile.mkdtemp())
-        (root / "Theorems" / H / "attempts" / A1).mkdir(parents=True)
-        (root / "Theorems" / H / "attempts" / A1 / "Attempt.lean").write_text("x")
+        ((root / layout.attempt_path(H, A1)).parent).mkdir(parents=True)
+        (root / layout.attempt_path(H, A1)).write_text("x")
         self.assertEqual(provenance.attempt_paths(root), [(H, A1)])
 
 

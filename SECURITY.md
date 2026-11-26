@@ -6,7 +6,7 @@ Please report security problems privately through GitHub's [private vulnerabilit
 
 ## How a proof is trusted
 
-1. **Scope** (`tools/arginf.py check`): a PR adds files to one `Theorems/<hash>/` folder only, and names match hashes.
+1. **Scope** (`tools/arginf.py check`): a PR adds files to one `Theorems/<ab>/<hash>/` folder only, at a fixed depth and in the shard its hash names, and names match hashes.
 2. **Plain Lean** (`tools/safety.py`): nothing in a theorem folder can run code while Lean compiles or imports it, extend the parser, add axioms, or change kernel options. This runs before any Lean is compiled, and `automerge` re-runs it on the PR's files before merging.
 3. **Kernel re-check** (`leanchecker`, shipped with the toolchain): every declaration is replayed in the kernel, without running initializers.
 4. **Axiom audit**: the proof has exactly the type `statement` and depends only on `propext`, `Classical.choice` and `Quot.sound`.

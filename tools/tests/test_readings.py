@@ -113,24 +113,24 @@ if __name__ == "__main__":
 class CacheTests(unittest.TestCase):
     """Each statement is read once per model; results carry everything needed to reproduce."""
 
-    P = {"a" * 12: "p" * 64, "b" * 12: "q" * 64}
+    P = {"a" * 20: "p" * 64, "b" * 20: "q" * 64}
 
     def test_missing_only_and_merge(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "p" * 64}]
-        self.assertEqual(readings.missing(["a" * 12, "b" * 12], old, SHA, self.P), ["b" * 12])
-        self.assertEqual(readings.missing(["a" * 12], old, "c" * 64, self.P), ["a" * 12])
+        old = [{"hash": "a" * 20, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 20, "b" * 20], old, SHA, self.P), ["b" * 20])
+        self.assertEqual(readings.missing(["a" * 20], old, "c" * 64, self.P), ["a" * 20])
 
     def test_changing_the_prompt_regenerates(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "z" * 64}]
-        self.assertEqual(readings.missing(["a" * 12], old, SHA, self.P), ["a" * 12])
+        old = [{"hash": "a" * 20, "modelSha256": SHA, "maxTokens": 512, "promptSha256": "z" * 64}]
+        self.assertEqual(readings.missing(["a" * 20], old, SHA, self.P), ["a" * 20])
 
     def test_changing_the_cap_regenerates(self) -> None:
-        old = [{"hash": "a" * 12, "modelSha256": SHA, "maxTokens": 256, "promptSha256": "p" * 64}]
-        self.assertEqual(readings.missing(["a" * 12], old, SHA, self.P), ["a" * 12])
-        legacy = [{"hash": "a" * 12, "modelSha256": SHA, "promptSha256": "p" * 64}]
-        self.assertEqual(readings.missing(["a" * 12], legacy, SHA, self.P), ["a" * 12])
-        merged = readings.merge(old, [{"hash": "b" * 12, "modelSha256": SHA, "text": "y"}])
-        self.assertEqual([r["hash"] for r in merged], ["a" * 12, "b" * 12])
+        old = [{"hash": "a" * 20, "modelSha256": SHA, "maxTokens": 256, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 20], old, SHA, self.P), ["a" * 20])
+        legacy = [{"hash": "a" * 20, "modelSha256": SHA, "promptSha256": "p" * 64}]
+        self.assertEqual(readings.missing(["a" * 20], legacy, SHA, self.P), ["a" * 20])
+        merged = readings.merge(old, [{"hash": "b" * 20, "modelSha256": SHA, "text": "y"}])
+        self.assertEqual([r["hash"] for r in merged], ["a" * 20, "b" * 20])
 
     def test_prompt_digest_changes_with_statement(self) -> None:
         self.assertNotEqual(readings.digest("p1"), readings.digest("p2"))
@@ -138,10 +138,10 @@ class CacheTests(unittest.TestCase):
 
 class EmbedTests(unittest.TestCase):
     def test_embed_attaches_readings_by_hash_without_timing(self) -> None:
-        index = {"version": 2, "theorems": [{"hash": "a" * 12}, {"hash": "b" * 12}]}
+        index = {"version": 2, "theorems": [{"hash": "a" * 20}, {"hash": "b" * 20}]}
         rs = [
             {
-                "hash": "a" * 12,
+                "hash": "a" * 20,
                 "text": "t",
                 "model": "M",
                 "modelSha256": SHA,
@@ -210,11 +210,11 @@ class PruneTests(unittest.TestCase):
     def test_embed_and_prune_keep_only_allowlisted_models(self) -> None:
         old, new = "1" * 64, "2" * 64
         rs = [
-            {"hash": "a" * 12, "text": "old", "model": "Old", "modelSha256": old},
-            {"hash": "a" * 12, "text": "new", "model": "New", "modelSha256": new},
+            {"hash": "a" * 20, "text": "old", "model": "Old", "modelSha256": old},
+            {"hash": "a" * 20, "text": "new", "model": "New", "modelSha256": new},
         ]
         kept = readings.prune(rs, {new})
         self.assertEqual([r["text"] for r in kept], ["new"])
-        index = {"version": 2, "theorems": [{"hash": "a" * 12}]}
+        index = {"version": 2, "theorems": [{"hash": "a" * 20}]}
         out = readings.embed(index, rs, {new})
         self.assertEqual([r["text"] for r in out["theorems"][0]["readings"]], ["new"])

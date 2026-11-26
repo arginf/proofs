@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """arginf contributor tool (Python 3.11+, standard library only).
 
-    python3 tools/arginf.py hash Theorems/<hash>/Statement.lean
+    python3 tools/arginf.py hash Theorems/<ab>/<hash>/Statement.lean
     python3 tools/arginf.py new [--import Mathlib] "<Lean Prop>"
     python3 tools/arginf.py check [--base upstream/main] # same checks as CI
     python3 tools/arginf.py check-all                    # every folder (main runs this)
+    python3 tools/arginf.py path <hash> [<attempt>]      # Theorems/<ab>/<hash>[/attempts/<cd>/<a>]
     python3 tools/arginf.py kernel [<hash> ...]          # kernel re-check after lake build
     python3 tools/arginf.py index > index.json
 
-Each theorem lives in Theorems/<hash>/. The hash is the first 12 hex digits of
-SHA-256 over the normalized `def statement : Prop := ...` body, with comments
+Each theorem lives in Theorems/<ab>/<hash>/ (see tools/layout.py). The hash is the first 20
+hex digits of SHA-256 over the normalized `def statement : Prop := ...` body, with comments
 and whitespace normalized and names excluded.
 """
 
@@ -23,25 +24,26 @@ import re
 import secrets
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import tomllib
 
 try:  # `python3 tools/arginf.py` puts tools/ on the path; `python3 -m tools.x` the repo root.
-    from tools import limits, safety
+    from tools import layout, limits, safety
 except ImportError:  # pragma: no cover
+    import layout  # type: ignore[no-redef]
     import limits  # type: ignore[no-redef]
     import safety  # type: ignore[no-redef]
 
-ROOT_DIR = "Theorems"
-HASH_LEN = 12
-HASH_RE = re.compile(rf"^[0-9a-f]{{{HASH_LEN}}}$")
+ROOT_DIR = layout.ROOT_DIR
+HASH_LEN = layout.HASH_LEN
+HASH_RE = layout.HASH_RE
 # Theorem folders hold Lean only: no prose, no comments, no string literals. The statement is
 # the statement. Curation (featured, examples) lives in CURATION_FILE, owned by maintainers.
 ALLOWED_FILES = frozenset({"Statement.lean"})
-ATTEMPT_DIR = "attempts"
-ATTEMPT_FILES = frozenset({"Attempt.lean", "attempt.toml"})
+ATTEMPT_DIR = layout.ATTEMPT_DIR
+ATTEMPT_FILES = layout.ATTEMPT_FILES
 CURATION_FILE = "curation.toml"
 CURATION_KEYS = ("featured", "examples")
 _STATEMENT_RE = re.compile(r"(?m)^def\s+statement\s*:\s*Prop\s*:=")
@@ -50,9 +52,13 @@ _COMMAND_RE = re.compile(
     r"example|structure|class|inductive|noncomputable|private|protected|@\[|#|import|set_option)\b"
 )
 # Building on another statement: import its Statement, or one of its proofs (an attempt).
-_IMPORT_RE = re.compile(
-    r"(?m)^import\s+Theorems\.«([0-9a-f]+)»\.(?:Statement|attempts\.«[0-9a-f]+»\.Attempt)\s*$"
-)
+_IMPORT_LINE_RE = re.compile(r"(?m)^import\s+(\S+)\s*$")
+
+
+def theorem_imports(text: str) -> list[str]:
+    """Statement hashes that this Lean file imports (a Statement or one of its attempts)."""
+    out = [layout.module_statement(m) for m in _IMPORT_LINE_RE.findall(text)]
+    return [h for h in out if h is not None]
 
 
 class ToolError(Exception):
@@ -89,29 +95,21 @@ def statement_hash(text: str) -> str:
 
 
 def check_scope(changed: list[str], branch: str) -> list[str]:
-    """A PR touches one theorem folder and at most one attempt inside it."""
+    """A PR touches one theorem folder and at most one attempt inside it.
+
+    Paths must have the exact sharded shape (layout.parse_path): right shard, fixed depth,
+    20-digit hashes."""
     errors: list[str] = []
     folders: set[str] = set()
     attempts: set[str] = set()
     for raw in changed:
-        p = PurePosixPath(raw)
-        parts = p.parts
-        if ".." in parts or p.is_absolute():
-            errors.append(f"{raw}: path tricks are not allowed")
+        parsed = layout.parse_path(raw)
+        if isinstance(parsed, str):
+            errors.append(parsed)
             continue
-        if len(parts) < 3 or parts[0] != ROOT_DIR or not HASH_RE.match(parts[1]):
-            errors.append(f"{raw}: outside a {ROOT_DIR}/<hash>/ folder")
-            continue
-        folders.add(parts[1])
-        if len(parts) == 3:
-            if parts[2] not in ALLOWED_FILES:
-                errors.append(f"{raw}: only {', '.join(sorted(ALLOWED_FILES))} are allowed")
-        elif len(parts) == 5 and parts[2] == ATTEMPT_DIR and HASH_RE.match(parts[3]):
-            attempts.add(parts[3])
-            if parts[4] not in ATTEMPT_FILES:
-                errors.append(f"{raw}: only {', '.join(sorted(ATTEMPT_FILES))} are allowed")
-        else:
-            errors.append(f"{raw}: not an allowed file in {ROOT_DIR}/<hash>/")
+        folders.add(parsed.statement)
+        if parsed.attempt is not None:
+            attempts.add(parsed.attempt)
     if len(folders) > 1:
         errors.append(f"a PR may change one folder only, found {sorted(folders)}")
     if len(attempts) > 1:
@@ -146,7 +144,7 @@ def prose_errors(path: Path | str, text: str) -> list[str]:
 def new_theorem(root: Path, prop: str, imports: tuple[str, ...] = ("Mathlib",)) -> str:
     body = f"def statement : Prop :=\n  {prop.strip()}\n"
     h = statement_hash(body)
-    folder = root / ROOT_DIR / h
+    folder = layout.statement_dir(root, h)
     if folder.exists():
         raise ToolError(f"{folder} already exists: this statement is already in the repo")
     for imp in imports:
@@ -206,7 +204,7 @@ def load_curation(root: Path) -> tuple[dict[str, list[str]], list[str]]:
         ):
             errors.append(f"{CURATION_FILE}: {key} must be a list of statement hashes")
         else:
-            missing = [v for v in value if not (root / ROOT_DIR / v).is_dir()]
+            missing = [v for v in value if not layout.statement_dir(root, v).is_dir()]
             if missing:
                 errors.append(f"{CURATION_FILE}: {key} lists unknown statements {missing}")
             out[key] = list(value)
@@ -230,7 +228,7 @@ def attempt_hash(text: str, parent: str | None) -> str:
 
 
 def _attempt_ns(h: str, a: str) -> str:
-    return f"{ROOT_DIR}.«{h}».Attempt_{a}"
+    return layout.attempt_namespace(h, a)
 
 
 def _read_attempt_meta(folder: Path) -> tuple[str | None, list[str]]:
@@ -248,13 +246,22 @@ def _read_attempt_meta(folder: Path) -> tuple[str | None, list[str]]:
     return (parent or None), errors
 
 
-def _write_attempt(folder: Path, h: str, a: str, code: str, parent: str | None) -> None:
+def attempt_text(h: str, a: str, code: str) -> str:
+    """Attempt.lean for `code` (extra imports first, then the proof), with every import on top.
+
+    Lean requires imports before anything else, so lemma imports carried in `code` go above the
+    namespace, after the statement's own import."""
+    lines = code.strip().splitlines()
+    imports = [ln for ln in lines if ln.startswith("import ")]
+    body = "\n".join(ln for ln in lines if not ln.startswith("import ")).strip()
     ns = _attempt_ns(h, a)
+    head = "\n".join([f"import {layout.statement_module(h)}", *imports])
+    return f"{head}\n\nnamespace {ns}\n\n{body}\n\nend {ns}\n"
+
+
+def _write_attempt(folder: Path, h: str, a: str, code: str, parent: str | None) -> None:
     folder.mkdir(parents=True)
-    (folder / "Attempt.lean").write_text(
-        f"import {ROOT_DIR}.«{h}».Statement\n\nnamespace {ns}\n\n{code.strip()}\n\nend {ns}\n",
-        encoding="utf-8",
-    )
+    (folder / "Attempt.lean").write_text(attempt_text(h, a, code), encoding="utf-8")
     (folder / "attempt.toml").write_text(f'parent = "{parent or ""}"\n', encoding="utf-8")
 
 
@@ -265,26 +272,29 @@ def _attempt_code(text: str) -> str:
 
 
 def start_attempt(root: Path, h: str, parent: str | None) -> str:
-    base = root / ROOT_DIR / h
+    base = layout.statement_dir(root, h)
     if not (base / "Statement.lean").is_file():
         raise ToolError(f"no statement {h}")
     if parent:
-        ptext = (base / ATTEMPT_DIR / parent / "Attempt.lean").read_text(encoding="utf-8")
+        pfile = layout.attempt_dir(root, h, parent) / "Attempt.lean"
+        if not pfile.is_file():
+            raise ToolError(f"no attempt {parent} on statement {h}")
+        ptext = pfile.read_text(encoding="utf-8")
         imports = [ln for ln in ptext.splitlines() if ln.startswith("import ")]
         code = "\n".join(imports[1:] + ["", _attempt_code(ptext)]).strip()
     else:
         code = f"theorem proof : {ROOT_DIR}.«{h}».statement := by\n  sorry"
     a = attempt_hash(code, parent)
-    if (base / ATTEMPT_DIR / a).exists():
+    if layout.attempt_dir(root, h, a).exists():
         # Identical starting point already exists: work in a draft until it is sealed.
         a = f"draft_{secrets.token_hex(4)}"
-    _write_attempt(base / ATTEMPT_DIR / a, h, a, code, parent)
+    _write_attempt(layout.attempt_dir(root, h, a), h, a, code, parent)
     return a
 
 
 def seal_attempt(folder: Path) -> str:
     """Re-hash an attempt after editing it, renaming its folder and namespace."""
-    h = folder.parent.parent.name
+    h = layout.statement_of_attempt_dir(folder)
     parent, errors = _read_attempt_meta(folder)
     if errors:
         raise ToolError("; ".join(errors))
@@ -296,13 +306,15 @@ def seal_attempt(folder: Path) -> str:
     a = attempt_hash(code, parent)
     if a == folder.name:
         return a
-    target = folder.parent / a
+    target = folder.parent.parent / layout.shard(a) / a
     if target.exists():
         raise ToolError(f"attempt {a} already exists")
     _write_attempt(target, h, a, code, parent)
     for f in folder.iterdir():
         f.unlink()
     folder.rmdir()
+    if not any(folder.parent.iterdir()):
+        folder.parent.rmdir()  # an emptied shard
     return a
 
 
@@ -320,7 +332,7 @@ def check_attempt(folder: Path) -> list[str]:
     code = "\n".join(extra + ["", _attempt_code(text)]).strip()
     if attempt_hash(code, parent) != folder.name:
         errors.append(f"{folder}: folder name does not match attempt hash (run `arginf.py seal`)")
-    if parent and not (folder.parent / parent).is_dir():
+    if parent and not (folder.parent.parent / layout.shard(parent) / parent).is_dir():
         errors.append(f"{folder}: parent attempt {parent} not found")
     for g in folder.iterdir():
         if g.name not in ATTEMPT_FILES:
@@ -331,13 +343,13 @@ def check_attempt(folder: Path) -> list[str]:
 
 def _progress_errors(folder: Path, code: str, parent: str | None) -> list[str]:
     """A checkpoint must make progress: not the bare template, not an unchanged copy."""
-    h = folder.parent.parent.name
+    h = layout.statement_of_attempt_dir(folder)
     body = _attempt_body(code)
     template = _attempt_body(f"theorem proof : {ROOT_DIR}.«{h}».statement := by\n  sorry")
     if body == template:
         return [f"{folder}: no progress: this is the empty template (`by sorry`)"]
     if parent:
-        pfile = folder.parent / parent / "Attempt.lean"
+        pfile = folder.parent.parent / layout.shard(parent) / parent / "Attempt.lean"
         if pfile.is_file():
             ptext = pfile.read_text(encoding="utf-8")
             extra = [
@@ -375,18 +387,15 @@ _AXIOMS_RE = re.compile(r"depends on axioms: \[(.*?)\]", re.DOTALL)
 
 def audit_source(h: str, attempt: str) -> str:
     """A Lean file that fails unless the attempt proves exactly `statement`, then lists axioms."""
-    ns = f"{ROOT_DIR}.«{h}»"
-    module, proof = f"{ns}.{ATTEMPT_DIR}.«{attempt}».Attempt", f"{_attempt_ns(h, attempt)}.proof"
+    ns = layout.statement_namespace(h)
+    module, proof = layout.attempt_module(h, attempt), f"{_attempt_ns(h, attempt)}.proof"
     return f"import {module}\nexample : {ns}.statement := {proof}\n#print axioms {proof}\n"
 
 
 def complete_attempts(root: Path, h: str) -> list[str]:
-    adir = root / ROOT_DIR / h / ATTEMPT_DIR
-    if not adir.is_dir():
-        return []
     return [
         a.name
-        for a in sorted(adir.iterdir())
+        for a in layout.attempt_dirs(layout.statement_dir(root, h))
         if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file() and attempt_info(a)["complete"]
     ]
 
@@ -406,25 +415,18 @@ def forbidden_axioms(axioms: list[str]) -> list[str]:
 
 def theorem_modules(root: Path, hashes: list[str] | None = None) -> list[str]:
     """Statement and attempt modules, statements first, for these folders (default: all)."""
-    base = root / ROOT_DIR
-    folders = (
-        sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name))
-        if base.is_dir()
-        else []
-    )
+    folders = [f for f in layout.statement_dirs(root) if HASH_RE.match(f.name)]
     if hashes is not None:
         folders = [f for f in folders if f.name in set(hashes)]
     mods: list[str] = []
     for f in folders:
         if (f / "Statement.lean").is_file():
-            mods.append(f"{ROOT_DIR}.«{f.name}».Statement")
-        adir = f / ATTEMPT_DIR
-        if adir.is_dir():
-            mods += [
-                f"{ROOT_DIR}.«{f.name}».{ATTEMPT_DIR}.«{a.name}».Attempt"
-                for a in sorted(adir.iterdir())
-                if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
-            ]
+            mods.append(layout.statement_module(f.name))
+        mods += [
+            layout.attempt_module(f.name, a.name)
+            for a in layout.attempt_dirs(f)
+            if HASH_RE.match(a.name) and (a / "Attempt.lean").is_file()
+        ]
     return mods
 
 
@@ -475,20 +477,19 @@ _ANY_IMPORT_RE = re.compile(r"(?m)^import\s+(\S+)\s*$")
 
 
 def _module_file(root: Path, module: str) -> Path:
+    """Theorems.«ab».«hash».Statement -> root/Theorems/ab/hash/Statement.lean."""
     parts = [p.strip("«»") for p in re.findall(r"«[^»]*»|[^.]+", module)]
     return root.joinpath(*parts).with_suffix(".lean")
 
 
 def fast_plan(root: Path, h: str) -> list[tuple[str, Path]] | None:
     """Modules to compile, dependencies first, or None if anything needs Mathlib/CSLib."""
-    targets = [f"{ROOT_DIR}.«{h}».Statement"]
-    adir = root / ROOT_DIR / h / ATTEMPT_DIR
-    if adir.is_dir():
-        targets += [
-            f"{ROOT_DIR}.«{h}».{ATTEMPT_DIR}.«{a.name}».Attempt"
-            for a in sorted(adir.iterdir())
-            if (a / "Attempt.lean").is_file()
-        ]
+    targets = [layout.statement_module(h)]
+    targets += [
+        layout.attempt_module(h, a.name)
+        for a in layout.attempt_dirs(layout.statement_dir(root, h))
+        if (a / "Attempt.lean").is_file()
+    ]
     order: list[tuple[str, Path]] = []
     state: dict[str, int] = {}
 
@@ -540,7 +541,7 @@ def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | No
         )
         if run.returncode != 0:
             return [f"{module}: {(run.stdout + run.stderr).strip()[:2000]}"]
-    kernel = kernel_check(root, [m for m, _ in plan if m.startswith(f"{ROOT_DIR}.«{h}».")], env)
+    kernel = kernel_check(root, [m for m, _ in plan if layout.module_statement(m) == h], env)
     if kernel:
         return kernel
     # Every complete attempt in the folder is a proof, so all of them are audited.
@@ -566,14 +567,7 @@ def fast_check(root: Path, h: str, attempt: str | None = None) -> list[str] | No
 
 
 def _attempt_tree(folder: Path) -> list[dict[str, Any]]:
-    adir = folder / ATTEMPT_DIR
-    if not adir.is_dir():
-        return []
-    nodes = {
-        p.name: attempt_info(p)
-        for p in sorted(adir.iterdir())
-        if p.is_dir() and HASH_RE.match(p.name)
-    }
+    nodes = {p.name: attempt_info(p) for p in layout.attempt_dirs(folder) if HASH_RE.match(p.name)}
     for n in nodes.values():
         if n["parent"] in nodes:
             nodes[n["parent"]]["children"].append(n["hash"])
@@ -583,14 +577,13 @@ def _attempt_tree(folder: Path) -> list[dict[str, Any]]:
 def build_index(root: Path) -> dict[str, Any]:
     curation, _ = load_curation(root)
     entries: dict[str, dict[str, Any]] = {}
-    base = root / ROOT_DIR
-    for folder in sorted(p for p in base.iterdir() if p.is_dir() and HASH_RE.match(p.name)):
+    for folder in (p for p in layout.statement_dirs(root) if HASH_RE.match(p.name)):
         errors = check_folder(folder)
         stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
         tree = _attempt_tree(folder)
         proofs = [a["hash"] for a in tree if a["complete"]]
         dep_text = stmt_text + "".join("\n" + a["lean"] for a in tree if a["complete"])
-        deps = sorted({d for d in _IMPORT_RE.findall(dep_text) if d != folder.name})
+        deps = sorted({d for d in theorem_imports(dep_text) if d != folder.name})
         entries[folder.name] = {
             "hash": folder.name,
             "statement": extract_statement(stmt_text),
@@ -621,23 +614,15 @@ def _limits_errors(root: Path) -> list[str]:
 def check_all(root: Path) -> list[str]:
     """Every folder and attempt, as CI checks a PR. main runs this before building."""
     errors: list[str] = _limits_errors(root)
-    base = root / ROOT_DIR
-    if not base.is_dir():
-        return errors
-    for folder in sorted(base.iterdir()):
-        if not (folder.is_dir() and HASH_RE.match(folder.name)):
-            errors.append(f"{folder}: not a {ROOT_DIR}/<hash>/ folder")
-            continue
+    shape = layout.shape_errors(root)
+    if shape:
+        return errors + shape  # contents are only checked once every folder is in its shard
+    for folder in layout.statement_dirs(root):
         errors += check_folder(folder)
-        adir = folder / ATTEMPT_DIR
-        if adir.is_dir():
-            for att in sorted(adir.iterdir()):
-                if att.is_dir() and HASH_RE.match(att.name):
-                    for e in check_attempt(att):
-                        if "no progress" not in e:  # judged when the attempt was merged
-                            errors.append(e)
-                else:
-                    errors.append(f"{att}: not an attempt folder")
+        for att in layout.attempt_dirs(folder):
+            for e in check_attempt(att):
+                if "no progress" not in e:  # judged when the attempt was merged
+                    errors.append(e)
     return errors
 
 
@@ -676,6 +661,9 @@ def main(argv: list[str] | None = None) -> int:
     p_kernel = sub.add_parser("kernel", help="replay modules in the kernel (after `lake build`)")
     p_kernel.add_argument("hashes", nargs="*", help="statements to check (default: all)")
     sub.add_parser("check-all", help="folder, attempt and safety checks for every folder")
+    p_path = sub.add_parser("path", help="print the folder of a statement or attempt")
+    p_path.add_argument("theorem")
+    p_path.add_argument("attempt", nargs="?", default=None)
     p_audit = sub.add_parser("audit", help="check proofs and axioms (needs `lake build` first)")
     p_audit.add_argument("hashes", nargs="*", help="statements to audit (default: all)")
     args = parser.parse_args(argv)
@@ -686,7 +674,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "new":
             h = new_theorem(root, args.prop, tuple(args.imports or ["Mathlib"]))
             print(h)
-            print(f"next: git switch -c {h}/statement && git add {ROOT_DIR}/{h}", file=sys.stderr)
+            folder = layout.statement_dir(Path("."), h).as_posix()
+            print(f"next: git switch -c {h}/statement && git add {folder}", file=sys.stderr)
         elif args.cmd == "check":
             branch = args.branch or _git("rev-parse", "--abbrev-ref", "HEAD").strip()
             base = args.base or default_base(_git("remote").split())
@@ -694,14 +683,15 @@ def main(argv: list[str] | None = None) -> int:
             changed = _git("diff", "--name-only", f"{base}...HEAD").split()
             errors = check_scope(changed, branch)
             for c in changed:
-                parts = PurePosixPath(c).parts
-                if len(parts) >= 3 and parts[0] == ROOT_DIR and HASH_RE.match(parts[1]):
-                    if (root / ROOT_DIR / parts[1]).is_dir():
-                        errors += check_folder(root / ROOT_DIR / parts[1])
-                    if len(parts) == 5 and parts[2] == ATTEMPT_DIR:
-                        att = root / ROOT_DIR / parts[1] / ATTEMPT_DIR / parts[3]
-                        if att.is_dir():
-                            errors += check_attempt(att)
+                parsed = layout.parse_path(c)
+                if isinstance(parsed, str):
+                    continue
+                if layout.statement_dir(root, parsed.statement).is_dir():
+                    errors += check_folder(layout.statement_dir(root, parsed.statement))
+                if parsed.attempt is not None:
+                    att = layout.attempt_dir(root, parsed.statement, parsed.attempt)
+                    if att.is_dir():
+                        errors += check_attempt(att)
             if any(c == CURATION_FILE for c in changed):
                 errors += load_curation(root)[1]
             if any(c == limits.LIMITS_FILE for c in changed):
@@ -716,8 +706,7 @@ def main(argv: list[str] | None = None) -> int:
             a = start_attempt(root, args.theorem, args.parent)
             print(a)
             print(
-                f"next: edit {ROOT_DIR}/{args.theorem}/{ATTEMPT_DIR}/{a}/Attempt.lean, then "
-                f"`arginf.py seal` it",
+                f"next: edit {layout.attempt_path(args.theorem, a)}, then `arginf.py seal` it",
                 file=sys.stderr,
             )
         elif args.cmd == "seal":
@@ -733,9 +722,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print("ok: compiled and audited with Lean core only")
         elif args.cmd == "audit":
-            hashes = args.hashes or sorted(
-                p.name for p in (root / ROOT_DIR).iterdir() if HASH_RE.match(p.name)
-            )
+            hashes = args.hashes or [
+                p.name for p in layout.statement_dirs(root) if HASH_RE.match(p.name)
+            ]
             pairs = [(h, a) for h in hashes for a in complete_attempts(root, h)]
             errors = [e for h, a in pairs for e in audit(root, h, a)]
             for e in errors:
@@ -750,6 +739,16 @@ def main(argv: list[str] | None = None) -> int:
             if errors:
                 return 1
             print("ok: kernel re-check passed")
+        elif args.cmd == "path":
+            for x in (args.theorem, args.attempt):
+                if x is not None and not HASH_RE.match(x):
+                    raise ToolError(f"{x!r} is not a {HASH_LEN}-digit hash")
+            d = (
+                layout.attempt_dir(Path("."), args.theorem, args.attempt)
+                if args.attempt
+                else layout.statement_dir(Path("."), args.theorem)
+            )
+            print(d.as_posix())
         elif args.cmd == "check-all":
             errors = check_all(root)
             for e in errors:

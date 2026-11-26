@@ -27,10 +27,10 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
-from tools import arginf, limits, moderation, safety
+from tools import arginf, layout, limits, moderation, safety
 
 _SORRY = re.compile(r"\bsorry\b")
 
@@ -63,7 +63,7 @@ def _decide_statement(
 ) -> Decision:
     if statement_exists(h):
         return Decision(False, f"statement {h} already exists", h, kind="statement")
-    path = f"{arginf.ROOT_DIR}/{h}/Statement.lean"
+    path = layout.statement_path(h)
     text = read(path)
     errors = safety.statement_errors(path, text, h)
     if errors:
@@ -75,23 +75,43 @@ def _decide_statement(
     return Decision(True, "new Lean-only statement, checks passed", h, kind="statement")
 
 
+# Titles before the 2026-11 layout migration carry 12-digit hashes; RENAME_FILE maps them.
 _MERGE_TITLE_RE = re.compile(
-    r"^Merge #\d+: (statement|proof|checkpoint) ([0-9a-f]{12}) by @([A-Za-z0-9-]+)$"
+    rf"^Merge #\d+: (statement|proof|checkpoint) "
+    rf"([0-9a-f]{{{layout.HASH_LEN}}}|[0-9a-f]{{{layout.LEGACY_HASH_LEN}}}) by @([A-Za-z0-9-]+)$"
 )
+RENAME_FILE = "migrations/2026-11-hash20.json"
 
 
-def earned_proofs(titles: list[str], statement_of: Callable[[str], str | None], login: str) -> int:
+def load_renames(root: Path) -> dict[str, str]:
+    """Old 12-digit statement and attempt hashes -> their 20-digit ones (empty if none)."""
+    path = root / RENAME_FILE
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {**data.get("statements", {}), **data.get("attempts", {})}
+
+
+def earned_proofs(
+    titles: list[str],
+    statement_of: Callable[[str], str | None],
+    login: str,
+    renamed: dict[str, str] | None = None,
+) -> int:
     """Statements added by someone else where `login`'s proof merged first (titles oldest first).
 
     Only automerge's own commit titles count. Proving your own statement, or a statement that is
-    already proved, earns nothing, so the cap cannot be farmed."""
+    already proved, earns nothing, so the cap cannot be farmed. Old 12-digit titles count through
+    `renamed`, so the layout migration keeps everyone's credit."""
+    renamed = renamed or {}
     creator: dict[str, str] = {}
     first: dict[str, str] = {}
     for title in titles:
         m = _MERGE_TITLE_RE.match(title)
         if not m:
             continue
-        kind, ref, who = m.group(1), m.group(2), m.group(3).lower()
+        kind, who = m.group(1), m.group(3).lower()
+        ref = renamed.get(m.group(2), m.group(2))
         if kind == "statement":
             creator.setdefault(ref, who)
         elif kind == "proof":
@@ -115,11 +135,7 @@ def _main_titles(root: Path) -> list[str]:
 
 
 def _statement_of(root: Path) -> Callable[[str], str | None]:
-    where = {
-        p.name: p.parent.parent.name
-        for p in (root / arginf.ROOT_DIR).glob(f"*/{arginf.ATTEMPT_DIR}/*")
-        if p.is_dir()
-    }
+    where = {a.name: s.name for s in layout.statement_dirs(root) for a in layout.attempt_dirs(s)}
     return where.get
 
 
@@ -189,31 +205,19 @@ def _decide(
     names: set[str] = set()
     statements: set[str] = set()
     for f in files:
-        p = PurePosixPath(str(f.get("filename", "")))
-        parts = p.parts
-        if ".." in parts or p.is_absolute():
-            return Decision(False, f"path trick: {p}")
+        name = str(f.get("filename", ""))
         if f.get("status") != "added":
-            return Decision(False, f"{p} is {f.get('status')}, not a new file")
-        if (
-            len(parts) == 3
-            and parts[0] == arginf.ROOT_DIR
-            and arginf.HASH_RE.match(parts[1])
-            and parts[2] == "Statement.lean"
-        ):
-            statements.add(parts[1])
+            return Decision(False, f"{name} is {f.get('status')}, not a new file")
+        # Exact sharded shape: right shard, fixed depth, 20-digit hashes (tools/layout.py).
+        parsed = layout.parse_path(name)
+        if isinstance(parsed, str):
+            return Decision(False, f"{name} is not a new statement or attempt ({parsed})")
+        if parsed.kind == "statement":
+            statements.add(parsed.statement)
             continue
-        if (
-            len(parts) != 5
-            or parts[0] != arginf.ROOT_DIR
-            or not arginf.HASH_RE.match(parts[1])
-            or parts[2] != arginf.ATTEMPT_DIR
-            or not arginf.HASH_RE.match(parts[3])
-            or parts[4] not in expected
-        ):
-            return Decision(False, f"{p} is not a new statement or attempt")
-        folders.add((parts[1], parts[3]))
-        names.add(parts[4])
+        assert parsed.attempt is not None
+        folders.add((parsed.statement, parsed.attempt))
+        names.add(parsed.name)
     if statements and folders:
         return Decision(False, "a new statement and an attempt together: a maintainer merges")
     if statements:
@@ -226,7 +230,7 @@ def _decide(
     ((h, a),) = folders
     if not statement_exists(h):
         return Decision(False, f"statement {h} is not on main yet")
-    path = f"{arginf.ROOT_DIR}/{h}/{arginf.ATTEMPT_DIR}/{a}/Attempt.lean"
+    path = layout.attempt_path(h, a)
     text = attempt_lean(path)
     errors = safety.attempt_errors(path, text)
     if errors:
@@ -299,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def statement_exists(h: str) -> bool:
         try:
-            _api("GET", f"{base}/contents/{arginf.ROOT_DIR}/{h}/Statement.lean?ref=main", token)
+            _api("GET", f"{base}/contents/{layout.statement_path(h)}?ref=main", token)
             return True
         except OSError:
             return False
@@ -337,7 +341,9 @@ def main(argv: list[str] | None = None) -> int:
     # Read from main (this job's checkout), never from the PR. An invalid file stops here.
     root = Path.cwd()
     caps = limits.caps_for(
-        limits.load(root), login, earned_proofs(_main_titles(root), _statement_of(root), login)
+        limits.load(root),
+        login,
+        earned_proofs(_main_titles(root), _statement_of(root), login, load_renames(root)),
     )
     print(f"caps for @{login}: {caps}")
     d = decide(

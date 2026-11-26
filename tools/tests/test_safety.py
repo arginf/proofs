@@ -7,10 +7,10 @@ second is the kernel re-check (`leanchecker`) that CI runs after building.
 import unittest
 from pathlib import Path
 
-from tools import arginf, safety
+from tools import arginf, layout, safety
 
-H = "0123456789ab"
-A = "ba9876543210"
+H = "0123456789abcdef0123"
+A = "ba98765432100123abcd"
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -24,7 +24,7 @@ def statement(body: str = "∀ n : Nat, n + 0 = n", imports: str = "import Init"
 def attempt(code: str, imports: str = "") -> str:
     extra = f"{imports}\n" if imports else ""
     return (
-        f"import Theorems.«{H}».Statement\n{extra}\nnamespace Theorems.«{H}».Attempt_{A}\n\n"
+        f"import {layout.statement_module(H)}\n{extra}\nnamespace Theorems.«{H}».Attempt_{A}\n\n"
         f"{code}\n\nend Theorems.«{H}».Attempt_{A}\n"
     )
 
@@ -37,11 +37,16 @@ class RepoContentTests(unittest.TestCase):
         theorems = REPO / "Theorems"
         if not theorems.is_dir():
             self.skipTest("no Theorems/ folder")
-        for stmt in sorted(theorems.glob("*/Statement.lean")):
-            errs = safety.statement_errors(stmt, stmt.read_text(encoding="utf-8"), stmt.parent.name)
+        folders = layout.statement_dirs(REPO)
+        self.assertTrue(folders, "no statements found in the sharded layout")
+        for folder in folders:
+            stmt = folder / "Statement.lean"
+            errs = safety.statement_errors(stmt, stmt.read_text(encoding="utf-8"), folder.name)
             self.assertEqual(errs, [], stmt)
-        for att in sorted(theorems.glob("*/attempts/*/Attempt.lean")):
-            self.assertEqual(safety.attempt_errors(att, att.read_text(encoding="utf-8")), [], att)
+            for adir in layout.attempt_dirs(folder):
+                att = adir / "Attempt.lean"
+                errs = safety.attempt_errors(att, att.read_text(encoding="utf-8"))
+                self.assertEqual(errs, [], att)
 
 
 class OrdinaryProofsPass(unittest.TestCase):
@@ -73,8 +78,8 @@ class OrdinaryProofsPass(unittest.TestCase):
             "import Mathlib.Data.Nat.Basic",
             "import Cslib.Crypto",
             "import CslibFrontier.X",
-            f"import Theorems.«{A}».Statement",
-            f"import Theorems.«{A}».attempts.«{H}».Attempt",
+            f"import {layout.statement_module(A)}",
+            f"import {layout.attempt_module(A, H)}",
         ):
             with self.subTest(imp=imp):
                 self.assertEqual(safety.attempt_errors("A", attempt(PROOF, imp)), [])
@@ -192,7 +197,7 @@ class StatementShape(unittest.TestCase):
             "import Init",
             "import Std",
             "import Lean",
-            f"import Theorems.«{A}».Statement",
+            f"import {layout.statement_module(A)}",
             "import Mathlib\nimport CslibFrontier.A",
         ):
             with self.subTest(imp=imp):
@@ -247,17 +252,17 @@ class WiredIntoChecks(unittest.TestCase):
         root = self.repo()
         h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", ("Init",))
         a = arginf.start_attempt(root, h, None)
-        f = root / "Theorems" / h / "attempts" / a / "Attempt.lean"
+        f = root / layout.attempt_path(h, a)
         f.write_text(f.read_text().replace("by\n  sorry", "by\n  run_tac pure ()\n  sorry"))
         a = arginf.seal_attempt(f.parent)
-        att = root / "Theorems" / h / "attempts" / a
+        att = (root / layout.attempt_path(h, a)).parent
         self.assertTrue(any("run_tac" in e for e in arginf.check_attempt(att)))
         self.assertTrue(any("run_tac" in e for e in arginf.check_all(root)))
 
     def test_check_folder_reports_a_helper_in_the_statement(self) -> None:
         root = self.repo()
         h = arginf.new_theorem(root, "True", ("Init",))
-        stmt = root / "Theorems" / h / "Statement.lean"
+        stmt = root / layout.statement_path(h)
         stmt.write_text(
             stmt.read_text().replace("def statement", "def t : Prop := True\ndef statement")
         )
@@ -267,7 +272,7 @@ class WiredIntoChecks(unittest.TestCase):
         root = self.repo()
         h = arginf.new_theorem(root, "∀ n : Nat, n + 0 = n", ("Mathlib",))
         self.assertEqual(arginf.check_all(root), [])
-        self.assertEqual(arginf.check_folder(root / "Theorems" / h), [])
+        self.assertEqual(arginf.check_folder(layout.statement_dir(root, h)), [])
 
     def test_fork_clones_check_against_upstream(self) -> None:
         self.assertEqual(arginf.default_base(["origin", "upstream"]), "upstream/main")
@@ -302,7 +307,7 @@ class WiredIntoChecks(unittest.TestCase):
         a = arginf.start_attempt(root, h, None)
         mods = arginf.theorem_modules(root)
         self.assertEqual(
-            mods, [f"Theorems.«{h}».Statement", f"Theorems.«{h}».attempts.«{a}».Attempt"]
+            mods, [layout.statement_module(h), layout.attempt_module(h, a)]
         )
         self.assertEqual(arginf.theorem_modules(root, [h]), mods)
         self.assertEqual(arginf.theorem_modules(root, ["ffffffffffff"]), [])

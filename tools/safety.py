@@ -15,13 +15,18 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+try:  # `python3 tools/arginf.py` puts tools/ on the path; `python3 -m tools.x` the repo root.
+    from tools import layout
+except ImportError:  # pragma: no cover
+    import layout  # type: ignore[no-redef]
+
 MAX_BYTES = 512 * 1024
 MAX_DIGITS = 20
-ROOT_DIR = "Theorems"
+ROOT_DIR = layout.ROOT_DIR
 ALLOWED_IMPORT_ROOTS = frozenset({"Init", "Std", "Lean", "Mathlib", "Cslib", "CslibFrontier"})
-_THEOREM_IMPORT_RE = re.compile(
-    r"^Theorems\.«[0-9a-f]{12}»\.(?:Statement|attempts\.«[0-9a-f]{12}»\.Attempt)$"
-)
+# Theorems.«ab».«hash».Statement or …attempts.«cd».«attempt».Attempt: shard checked against the
+# hash, HASH_LEN digits (tools/layout.py).
+_THEOREM_IMPORT_RE = layout.THEOREM_MODULE_RE
 _MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_']*)*$")
 
 # Commands and modifiers that run code, extend the parser, add axioms or skip checks.
