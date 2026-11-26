@@ -21,6 +21,7 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 from collections.abc import Callable
@@ -74,6 +75,54 @@ def _decide_statement(
     return Decision(True, "new Lean-only statement, checks passed", h, kind="statement")
 
 
+_MERGE_TITLE_RE = re.compile(
+    r"^Merge #\d+: (statement|proof|checkpoint) ([0-9a-f]{12}) by @([A-Za-z0-9-]+)$"
+)
+
+
+def earned_proofs(titles: list[str], statement_of: Callable[[str], str | None], login: str) -> int:
+    """Statements added by someone else where `login`'s proof merged first (titles oldest first).
+
+    Only automerge's own commit titles count. Proving your own statement, or a statement that is
+    already proved, earns nothing, so the cap cannot be farmed."""
+    creator: dict[str, str] = {}
+    first: dict[str, str] = {}
+    for title in titles:
+        m = _MERGE_TITLE_RE.match(title)
+        if not m:
+            continue
+        kind, ref, who = m.group(1), m.group(2), m.group(3).lower()
+        if kind == "statement":
+            creator.setdefault(ref, who)
+        elif kind == "proof":
+            h = statement_of(ref)
+            if h is not None:
+                first.setdefault(h, who)
+    me = login.lower()
+    return sum(1 for h, who in first.items() if who == me and creator.get(h) != me)
+
+
+def _main_titles(root: Path) -> list[str]:
+    """First-parent commit subjects on main, oldest first (needs a full checkout)."""
+    out = subprocess.run(
+        ["git", "log", "--first-parent", "--reverse", "--format=%s", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return out.splitlines()
+
+
+def _statement_of(root: Path) -> Callable[[str], str | None]:
+    where = {
+        p.name: p.parent.parent.name
+        for p in (root / arginf.ROOT_DIR).glob(f"*/{arginf.ATTEMPT_DIR}/*")
+        if p.is_dir()
+    }
+    return where.get
+
+
 def trusted_run(path: str, event: str) -> bool:
     """Only a run of our own PR workflow, for a pull request, can lead to a merge.
 
@@ -107,7 +156,12 @@ def decide(
     if changed_files != len(files) or not files:
         return Decision(False, f"file list incomplete ({len(files)} of {changed_files})")
     d = _decide(
-        files, statement_exists, attempt_lean, recent_statements, recent_checkpoints, recent_proofs,
+        files,
+        statement_exists,
+        attempt_lean,
+        recent_statements,
+        recent_checkpoints,
+        recent_proofs,
         caps,
     )
     if d.merge and account_age_days() < MIN_ACCOUNT_AGE_DAYS:
@@ -281,7 +335,11 @@ def main(argv: list[str] | None = None) -> int:
         return (datetime.now(UTC) - created).total_seconds() / 86400
 
     # Read from main (this job's checkout), never from the PR. An invalid file stops here.
-    caps = limits.caps_for(limits.load(Path.cwd()), login)
+    root = Path.cwd()
+    caps = limits.caps_for(
+        limits.load(root), login, earned_proofs(_main_titles(root), _statement_of(root), login)
+    )
+    print(f"caps for @{login}: {caps}")
     d = decide(
         files,
         statement_exists,
