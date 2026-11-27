@@ -34,6 +34,7 @@ from tools import arginf, areas, data, incremental, layout, ledger, provenance, 
 
 MIN_GAP_SECONDS = 360  # Pages builds from the branch: at most 10 builds an hour
 RETIRED = "meta/retired.json"
+PAGES_DOMAIN = "data.arginf.com"
 SIZE_HISTORY = "meta/size-history.json"
 HISTORY_KEEP_SECONDS = 120 * 24 * 3600
 
@@ -213,6 +214,9 @@ def build(
     commit (None: rebuild everything)."""
     out.mkdir(parents=True, exist_ok=True)
     prev = Previous(out)
+    # GitHub Pages: serve files as they are (no Jekyll), at our own domain.
+    _write(out, ".nojekyll", b"", [])
+    _write(out, "CNAME", f"{PAGES_DOMAIN}\n".encode(), [])
     deleted = 0
     for rel in _load_json(out / RETIRED, []):
         path = out / str(rel)

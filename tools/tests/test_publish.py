@@ -405,3 +405,12 @@ class NoOpTests(unittest.TestCase):
         }
         self.assertEqual(result.written, [])
         self.assertEqual(before, after)
+
+
+class PagesFilesTests(unittest.TestCase):
+    def test_tree_has_nojekyll_and_the_custom_domain(self) -> None:
+        root, out = repo(1), Path(tempfile.mkdtemp())
+        build(root, out, None, Counting())
+        self.assertTrue((out / ".nojekyll").is_file())  # serve files as they are, no Jekyll
+        self.assertEqual((out / "CNAME").read_text(), "data.arginf.com\n")
+        self.assertEqual(build(root, out, [], Counting()).written, [])  # still a no-op after
