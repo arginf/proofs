@@ -23,6 +23,10 @@ jobs:
     outputs:
       hash: ${{ steps.scope.outputs.hash }}
       attempt: ${{ steps.scope.outputs.attempt }}
+      # Statements whose modules the lean job builds, kernel-checks and audits: only what this
+      # change adds (tools/incremental.py), so the cost doesn't grow with the repo.
+      statements: ${{ steps.scope.outputs.statements }}
+      full: ${{ steps.scope.outputs.full }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -36,7 +40,7 @@ jobs:
       - id: scope
         name: One folder, matching hash and branch
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
@@ -44,19 +48,30 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
         run: |
+          # What a group or maintainer change adds, and whether it touches the toolchain or the
+          # checking tools (tools/incremental.py). Contributor PRs never reach this: their scope is
+          # their branch's one folder, checked by arginf.py below.
+          planned() {
+            PLAN=$(python3 -m tools.incremental plan --base "$BASE_SHA")
+            STATEMENTS=$(jq -r '.statements | join(" ")' <<<"$PLAN")
+            jq -r '.reasons[]' <<<"$PLAN"
+            echo "full=$(jq -r .full <<<"$PLAN")" >> "$GITHUB_OUTPUT"
+            echo "hash=" >> "$GITHUB_OUTPUT"; echo "statements=$STATEMENTS" >> "$GITHUB_OUTPUT"
+            if [[ $(jq -r .lexicalFull <<<"$PLAN") == "true" ]]; then python3 tools/arginf.py check-all
+            elif [[ -n "$STATEMENTS" ]]; then python3 -m tools.incremental lexical $STATEMENTS; fi
+          }
           # A queued group: each PR in it already passed its own scope check, and rulesets require
-          # code-owner review for anything outside Theorems/. Re-check every folder, then build all.
-          if [[ "$EVENT" == "merge_group" ]]; then
-            python3 tools/arginf.py check-all; echo "hash=" >> "$GITHUB_OUTPUT"; exit 0
-          fi
+          # code-owner review for anything outside Theorems/. Re-check the group's folders.
+          if [[ "$EVENT" == "merge_group" ]]; then planned; exit 0; fi
           # Maintainers (write access or more) change tooling on infra/* branches in this repo;
           # everyone else is scoped. Org membership can be private, so ask the API.
           PERM=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
           if [[ "$HEAD_REF" == infra/* && "$SAME_REPO" == "true" && ( "$PERM" == "admin" || "$PERM" == "maintain" || "$PERM" == "write" ) ]]; then
-            echo "maintainer infra change: scope check skipped"; echo "hash=" >> "$GITHUB_OUTPUT"; exit 0
+            echo "maintainer infra change: scope check skipped"; planned; exit 0
           fi
           python3 tools/arginf.py check --base "$BASE_SHA" --branch "$HEAD_REF"
           echo "hash=${HEAD_REF%%/*}" >> "$GITHUB_OUTPUT"
+          echo "statements=${HEAD_REF%%/*}" >> "$GITHUB_OUTPUT"
           ATTEMPT=$(git diff --name-only "$BASE_SHA...HEAD" | sed -nE 's#^Theorems/[0-9a-f]{2}/[0-9a-f]{20}/attempts/[0-9a-f]{2}/([0-9a-f]{20})/.*#\1#p' | sort -u | head -1)
           echo "attempt=$ATTEMPT" >> "$GITHUB_OUTPUT"
   lean:
@@ -66,6 +81,8 @@ jobs:
     env:
       HASH: ${{ needs.scope.outputs.hash }}
       ATTEMPT: ${{ needs.scope.outputs.attempt }}
+      STATEMENTS: ${{ needs.scope.outputs.statements }}
+      FULL: ${{ needs.scope.outputs.full }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -82,7 +99,13 @@ jobs:
       - name: Fast check (core-only folders)
         id: fast
         run: |
-          if [ -z "$HASH" ]; then echo "full=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -z "$HASH" ]; then
+            # Groups and maintainer changes: build only their statements. A toolchain or Mathlib
+            # bump also builds a capped sample here; the complete rebuild is full-check.yml.
+            if [ -n "$STATEMENTS" ] || [ "$FULL" == "true" ]; then echo "full=true" >> "$GITHUB_OUTPUT"
+            else echo "no theorem folders changed: nothing to build"; fi
+            exit 0
+          fi
           set +e
           if [ -n "$ATTEMPT" ] && ! grep -qw sorry "$(python3 tools/arginf.py path "$HASH" "$ATTEMPT")/Attempt.lean"; then
             python3 tools/arginf.py fast "$HASH" --attempt "$ATTEMPT"
@@ -105,17 +128,38 @@ jobs:
         run: |
           lake exe cache get || true
           (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
-      - name: Build
+      - name: Choose what to build
         if: steps.fast.outputs.full == 'true'
-        run: lake build
-      - name: Kernel re-check (leanchecker)
-        if: steps.fast.outputs.full == 'true'
+        id: what
         run: |
-          # Replays every declaration in the kernel, so nothing reached the environment unchecked.
-          if [ -z "$HASH" ]; then python3 tools/arginf.py kernel; else python3 tools/arginf.py kernel "$HASH"; fi
+          S="$STATEMENTS"
+          if [ "$FULL" == "true" ]; then
+            # Sample: the first 300 modules in shard order, so a bump that breaks common proofs
+            # fails here. Every statement is rebuilt by full-check.yml once the bump is on main.
+            SAMPLE=$(python3 -m tools.incremental matrix --cache /dev/null --ignore-cache --max-jobs 1 --max-modules 300 | jq -r '.include[0].statements // ""')
+            S=$(echo "$S $SAMPLE" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+            echo "::notice::lean-toolchain, lake-manifest.json or lakefile.toml changed: building a sample here; full-check.yml rebuilds everything after merge"
+          fi
+          S=$(echo $S)  # trim
+          echo "statements=$S" >> "$GITHUB_OUTPUT"
+          # With no arguments, lake build, kernel and audit mean "everything": never call them empty.
+          if [ -n "$S" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Build
+        if: steps.what.outputs.any == 'true'
+        env:
+          S: ${{ steps.what.outputs.statements }}
+        run: lake build $(python3 -m tools.incremental targets $S)
+      - name: Kernel re-check (leanchecker)
+        if: steps.what.outputs.any == 'true'
+        env:
+          S: ${{ steps.what.outputs.statements }}
+        # Replays every declaration in the kernel, so nothing reached the environment unchecked.
+        run: python3 tools/arginf.py kernel $S
       - name: Proof matches statement, allowed axioms only
-        if: steps.fast.outputs.full == 'true'
+        if: steps.what.outputs.any == 'true'
+        env:
+          S: ${{ steps.what.outputs.statements }}
         run: |
           # Every complete attempt is a proof and is audited; partial ones (sorry) merge as checkpoints.
-          if [ -z "$HASH" ]; then python3 tools/arginf.py audit; else python3 tools/arginf.py audit "$HASH"; fi
+          python3 tools/arginf.py audit $S
           echo "checks passed"
