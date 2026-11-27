@@ -1,5 +1,8 @@
 # Full rebuild, kernel re-check and audit of everything on main, a capped amount per run.
 #
+# A maintainer can also run it on a branch (gh workflow run full-check.yml --ref <branch>) to
+# check a whole branch without a PR; such runs build and report but record nothing.
+#
 # Runs when lean-toolchain, lake-manifest.json or lakefile.toml change on main (a bump changes the
 # audit cache's environment key, so every statement becomes pending), daily as a safety net (it
 # picks up anything a cancelled or failed main run missed, and resumes a bump that didn't finish),
@@ -40,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -75,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -120,7 +123,8 @@ jobs:
     # main's publish job also merges this file before it replaces the branch, so a pass is lost
     # only in a narrow race, and then the next run simply redoes it.
     needs: [plan, check]
-    if: ${{ !cancelled() && needs.plan.outputs.any == 'true' }}
+    # Only main's results are recorded; a run dispatched on a branch just reports.
+    if: ${{ !cancelled() && needs.plan.outputs.any == 'true' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -157,7 +161,7 @@ jobs:
           echo "::warning::could not record the cache; the next run redoes this work"
   alert:
     needs: check
-    if: ${{ failure() }}
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
