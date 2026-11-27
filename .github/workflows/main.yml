@@ -1,4 +1,5 @@
-# On every merge: rebuild everything, audit every proof, then ask arginf.com to re-render.
+# On every merge: check what the merge added (not the whole repo), then republish the index.
+# Toolchain and Mathlib bumps, and anything a cancelled run missed, are rebuilt by full-check.yml.
 name: main
 on:
   push:
@@ -13,12 +14,35 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0 # the push's before..after diff
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - name: Every folder passes the PR checks (including the Lean allowlist)
-        run: python3 tools/arginf.py check-all
+      - name: What this push added
+        id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [[ "$EVENT" != "push" || "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            # Manual run or no usable base: check every folder lexically; Lean is full-check.yml's.
+            echo "statements=" >> "$GITHUB_OUTPUT"; echo "lexical_full=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          PLAN=$(python3 -m tools.incremental plan --base "$BEFORE" --head "$GITHUB_SHA")
+          jq -r '.reasons[]' <<<"$PLAN"
+          S=$(jq -r '.statements | join(" ")' <<<"$PLAN")
+          echo "statements=$S" >> "$GITHUB_OUTPUT"
+          echo "lexical_full=$(jq -r .lexicalFull <<<"$PLAN")" >> "$GITHUB_OUTPUT"
+          if [ -n "$S" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
+      - name: The added folders pass the PR checks (including the Lean allowlist)
+        env:
+          S: ${{ steps.plan.outputs.statements }}
+          FULL: ${{ steps.plan.outputs.lexical_full }}
+        run: |
+          if [ "$FULL" == "true" ]; then python3 tools/arginf.py check-all
+          elif [ -n "$S" ]; then python3 -m tools.incremental lexical $S
+          else echo "no theorem folders added"; fi
       - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1
         with:
           auto-config: false
@@ -43,16 +67,38 @@ jobs:
         with:
           path: .lake/packages
           key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+      # Only the added statements' modules; lake builds what they import. With no arguments these
+      # commands mean "everything", so they are skipped when nothing was added.
       - name: Build
-        run: lake build
+        if: steps.plan.outputs.any == 'true'
+        env:
+          S: ${{ steps.plan.outputs.statements }}
+        run: lake build $(python3 -m tools.incremental targets $S)
       - name: Kernel re-check (leanchecker)
-        run: python3 tools/arginf.py kernel
-      - run: python3 tools/arginf.py audit
+        id: kernel
+        if: steps.plan.outputs.any == 'true'
+        env:
+          S: ${{ steps.plan.outputs.statements }}
+        run: python3 tools/arginf.py kernel $S
+      - name: Audit cache from the last publish
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > audit-cache.json 2>/dev/null || echo '{}' > audit-cache.json
+      - name: Proof matches statement, allowed axioms only (cached passes are skipped)
+        if: steps.plan.outputs.any == 'true'
+        env:
+          S: ${{ steps.plan.outputs.statements }}
+        run: |
+          python3 -m tools.incremental audit --cache audit-cache.json $S
+          python3 -m tools.incremental built --cache audit-cache.json $S
       - run: python3 tools/arginf.py index > index.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: index
-          path: index.json
+          path: |
+            index.json
+            audit-cache.json
   readings:
     # One English reading per statement per allowlisted model, generated once and kept on the
     # index branch. Only new statements cost model time (~30 s each, plus a weights download).
@@ -108,12 +154,15 @@ jobs:
         run: |
           # A failed readings job never blocks publishing: keep the previous readings instead.
           [ -f out/readings.json ] || curl -fsSL "https://raw.githubusercontent.com/$REPO/index/readings.json" -o out/readings.json || echo "[]" > out/readings.json
+          # Keep passes that full-check.yml recorded on the index branch since verify ran.
+          git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > out/latest-cache.json 2>/dev/null || echo '{}' > out/latest-cache.json
+          python3 -m tools.incremental merge-cache --out out/audit-cache.json out/audit-cache.json out/latest-cache.json
           python3 -m tools.readings embed out/index.json out/readings.json
           python3 -m tools.provenance embed out/index.json
           python3 -c "import json; json.load(open('out/index.json')); json.load(open('out/readings.json'))"
-          git init -q -b index site && cp out/index.json out/readings.json site/ && cd site
+          git init -q -b index site && cp out/index.json out/readings.json out/audit-cache.json site/ && cd site
           git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
-          git add index.json readings.json && git commit -qm "index for $SHA"
+          git add index.json readings.json audit-cache.json && git commit -qm "index for $SHA"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index
   alert:
     # A merged change that fails verification on main freezes the site at the last good index.

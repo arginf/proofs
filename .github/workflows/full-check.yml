@@ -1,0 +1,174 @@
+# Full rebuild, kernel re-check and audit of everything on main, a capped amount per run.
+#
+# Runs when lean-toolchain, lake-manifest.json or lakefile.toml change on main (a bump changes the
+# audit cache's environment key, so every statement becomes pending), daily as a safety net (it
+# picks up anything a cancelled or failed main run missed, and resumes a bump that didn't finish),
+# and by hand. Work is a matrix over shards of pending statements (tools/incremental.py matrix);
+# whatever doesn't fit in this run's caps waits for the next run. A run with nothing pending takes
+# about a minute and builds no Lean.
+#
+# Contributed Lean is built only in the read-only check jobs. The record job, the only one that
+# can write, handles nothing but cache files, which tools/incremental.py validates on load.
+name: full check
+on:
+  push:
+    branches: [main]
+    paths: [lean-toolchain, lake-manifest.json, lakefile.toml]
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      ignore_cache:
+        description: Re-check everything, ignoring cached passes
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: full-check
+  cancel-in-progress: false
+env:
+  MAX_JOBS: 16 # parallel runners per run (public repos get 20 concurrent jobs)
+  MAX_MODULES: 1500 # modules per job, well inside the 6-hour job limit
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      any: ${{ steps.matrix.outputs.any }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Audit cache from the index branch
+        run: |
+          git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > audit-cache.json 2>/dev/null || echo '{}' > audit-cache.json
+      - id: matrix
+        env:
+          IGNORE: ${{ inputs.ignore_cache && '--ignore-cache' || '' }}
+        run: |
+          M=$(python3 -m tools.incremental matrix --cache audit-cache.json --max-jobs "$MAX_JOBS" --max-modules "$MAX_MODULES" $IGNORE)
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          if [ "$(jq '.include | length' <<<"$M")" != "0" ]; then echo "any=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-base
+          path: audit-cache.json
+          retention-days: 7
+  check:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: check ${{ matrix.name }}
+    env:
+      S: ${{ matrix.statements }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cache-base
+      - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1
+        with:
+          auto-config: false
+          use-mathlib-cache: false
+      # Restore only: main saves the dependency cache before any theorem folder is compiled.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .lake/packages
+          key: lake-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}
+      - name: Fetch any missing build outputs
+        run: |
+          lake exe cache get || true
+          (cd .lake/packages/cslib-frontier && bash scripts/cache/get.sh) || echo "frontier cache miss"
+      - name: Lexical checks
+        run: python3 -m tools.incremental lexical $S
+      - name: Build
+        run: lake build $(python3 -m tools.incremental targets $S)
+      - name: Kernel re-check (leanchecker)
+        id: kernel
+        run: python3 tools/arginf.py kernel $S
+      - name: Audit (cached passes are skipped; new passes are recorded even if one proof fails)
+        if: ${{ !cancelled() && steps.kernel.outcome == 'success' }}
+        run: python3 -m tools.incremental audit --cache audit-cache.json $S
+      - name: Record built statements
+        if: ${{ !cancelled() && steps.kernel.outcome == 'success' }}
+        run: python3 -m tools.incremental built --cache audit-cache.json $S
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: cache-part-${{ matrix.name }}
+          path: audit-cache.json
+          retention-days: 7
+  record:
+    # Merge every job's passes into audit-cache.json on the index branch, as a new commit.
+    # main's publish job also merges this file before it replaces the branch, so a pass is lost
+    # only in a narrow race, and then the next run simply redoes it.
+    needs: [plan, check]
+    if: ${{ !cancelled() && needs.plan.outputs.any == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cache-part-*
+          path: parts
+      - name: Commit the merged cache to the index branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for try in 1 2 3 4; do
+            rm -rf site && git clone -q --depth=1 --branch index "https://github.com/$REPO.git" site || exit 0
+            python3 -m tools.incremental merge-cache --out merged.json site/audit-cache.json parts/*/audit-cache.json
+            cp merged.json site/audit-cache.json
+            cd site
+            git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
+            git add audit-cache.json
+            git diff --cached --quiet && exit 0
+            git commit -qm "audit cache from full check $GITHUB_RUN_ID"
+            git push -q "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index && exit 0
+            cd .. && sleep $((try * 15))
+          done
+          echo "::warning::could not record the cache; the next run redoes this work"
+  alert:
+    needs: check
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$REPO/issues" -f title="Full check failed (run $GITHUB_RUN_ID)" \
+            -f body="Some merged statements no longer build, kernel-check or audit under the current toolchain and dependencies: $RUN_URL. Failed statements stay pending, so every run retries them until they are fixed or ported." \
+            -f "labels[]=full-check-failed" >/dev/null
