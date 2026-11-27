@@ -122,6 +122,12 @@ class AuditCache:
 
     @classmethod
     def load(cls, path: Path) -> AuditCache:
+        """A cache file, or a directory of shards (cache/audit/<ab>.json in the data tree)."""
+        if path.is_dir():
+            merged = cls()
+            for shard in sorted(path.glob("*.json")):
+                merged.merge(cls.load(shard))
+            return merged
         cache = cls()
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -142,6 +148,18 @@ class AuditCache:
         return cache
 
     def save(self, path: Path) -> None:
+        """To a file, or (if `path` is a directory) sharded by the first two hash digits."""
+        if path.is_dir():
+            shards: dict[str, AuditCache] = {}
+            for env, hashes in self._audited.items():
+                for x in hashes:
+                    shards.setdefault(x[:2], AuditCache())._audited.setdefault(env, set()).add(x)
+            for env, hashes in self._built.items():
+                for x in hashes:
+                    shards.setdefault(x[:2], AuditCache())._built.setdefault(env, set()).add(x)
+            for shard, part in shards.items():
+                part.save(path / f"{shard}.json")
+            return
         data = {
             "version": CACHE_VERSION,
             "audited": {e: sorted(v) for e, v in sorted(self._audited.items())},

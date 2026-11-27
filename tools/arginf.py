@@ -574,29 +574,41 @@ def _attempt_tree(folder: Path) -> list[dict[str, Any]]:
     return list(nodes.values())
 
 
+def statement_record(
+    root: Path, h: str, curation: dict[str, list[str]] | None = None
+) -> dict[str, Any]:
+    """One statement as the index and the published data show it (dependents left empty)."""
+    folder = layout.statement_dir(root, h)
+    if curation is None:
+        curation, _ = load_curation(root)
+    errors = check_folder(folder)
+    stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
+    tree = _attempt_tree(folder)
+    proofs = [a["hash"] for a in tree if a["complete"]]
+    dep_text = stmt_text + "".join("\n" + a["lean"] for a in tree if a["complete"])
+    deps = sorted({d for d in theorem_imports(dep_text) if d != h})
+    return {
+        "hash": h,
+        "statement": extract_statement(stmt_text),
+        "statementLean": stmt_text,
+        "status": "proved" if proofs else "open",
+        "proofs": proofs,
+        "dependencies": deps,
+        "dependents": [],
+        "valid": not errors,
+        "featured": h in curation["featured"],
+        "example": h in curation["examples"],
+        "attempts": tree,
+    }
+
+
 def build_index(root: Path) -> dict[str, Any]:
     curation, _ = load_curation(root)
-    entries: dict[str, dict[str, Any]] = {}
-    for folder in (p for p in layout.statement_dirs(root) if HASH_RE.match(p.name)):
-        errors = check_folder(folder)
-        stmt_text = (folder / "Statement.lean").read_text(encoding="utf-8")
-        tree = _attempt_tree(folder)
-        proofs = [a["hash"] for a in tree if a["complete"]]
-        dep_text = stmt_text + "".join("\n" + a["lean"] for a in tree if a["complete"])
-        deps = sorted({d for d in theorem_imports(dep_text) if d != folder.name})
-        entries[folder.name] = {
-            "hash": folder.name,
-            "statement": extract_statement(stmt_text),
-            "statementLean": stmt_text,
-            "status": "proved" if proofs else "open",
-            "proofs": proofs,
-            "dependencies": deps,
-            "dependents": [],
-            "valid": not errors,
-            "featured": folder.name in curation["featured"],
-            "example": folder.name in curation["examples"],
-            "attempts": tree,
-        }
+    entries = {
+        p.name: statement_record(root, p.name, curation)
+        for p in layout.statement_dirs(root)
+        if HASH_RE.match(p.name)
+    }
     for h, e in entries.items():
         for d in e["dependencies"]:
             if d in entries:
