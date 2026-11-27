@@ -178,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--cache", type=Path, default=Path(".cache/readings"))
     g.add_argument("--out", type=Path, default=Path("areas.json"))
     g.add_argument("--existing", type=Path, default=None, help="areas.json to extend")
+    g.add_argument("--limit", type=int, default=None, help="at most this many statements per run")
     g.add_argument("hashes", nargs="*")
     e = sub.add_parser("embed", help="attach areas.json to index.json in place")
     e.add_argument("index", type=Path)
@@ -201,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         existing = _load_json_list(args.existing)
         prompts = {h: readings.digest(user_message(root, h)) for h in hashes}
-        todo = missing(hashes, existing, model.sha256, prompts)
+        todo = missing(hashes, existing, model.sha256, prompts)[: args.limit]  # backlog waits
         existing = readings.prune(existing, allowed)
         result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
     except (readings.ReadingError, OSError, ValueError) as err:

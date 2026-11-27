@@ -31,7 +31,9 @@ def repo(n: int) -> Path:
     return root
 
 
-def new_statement(root: Path, prop: str, imports: tuple[str, ...] = ("Init",)) -> tuple[str, list[str]]:
+def new_statement(
+    root: Path, prop: str, imports: tuple[str, ...] = ("Init",)
+) -> tuple[str, list[str]]:
     h = arginf.new_theorem(root, prop, imports=imports)
     return h, [layout.statement_path(h)]
 
@@ -47,11 +49,30 @@ class Counting:
 
     def prov(self, h: str, attempts: list[str]) -> dict[str, dict[str, Any]]:
         self.provenance += attempts
-        return {a: {"mergedAt": "2026-11-27T00:00:00Z", "commit": "s", "pr": 1, "author": "alice", "upvotes": 0} for a in attempts}
+        return {
+            a: {
+                "mergedAt": "2026-11-27T00:00:00Z",
+                "commit": "s",
+                "pr": 1,
+                "author": "alice",
+                "upvotes": 0,
+            }
+            for a in attempts
+        }
 
 
-def build(root: Path, out: Path, changed: list[str] | None, spy: Counting, **kw: Any) -> publish.Result:
-    return publish.build(root, out, commit="c" * 40, changed=changed, record_fn=spy.record, provenance_fn=spy.prov, **kw)
+def build(
+    root: Path, out: Path, changed: list[str] | None, spy: Counting, **kw: Any
+) -> publish.Result:
+    return publish.build(
+        root,
+        out,
+        commit="c" * 40,
+        changed=changed,
+        record_fn=spy.record,
+        provenance_fn=spy.prov,
+        **kw,
+    )
 
 
 def manifest(out: Path) -> dict[str, Any]:
@@ -102,17 +123,33 @@ class IncrementalTests(unittest.TestCase):
     def test_unchanged_shards_are_carried_forward_byte_for_byte(self) -> None:
         root, out = repo(40), Path(tempfile.mkdtemp())
         build(root, out, None, Counting())
-        before = {p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+        before = {
+            p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
         h, changed = new_statement(root, "777 = 777")
         result = build(root, out, changed, Counting())
-        after = {p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+        after = {
+            p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
         touched = {p for p in after if before.get(p) != after[p]}
         for p in touched:
             self.assertTrue(
-                p.startswith((f"summary/{h[:2]}", f"statements/{h[:2]}/", "search", "graph/", "manifest", "meta/")),
+                p.startswith(
+                    (
+                        f"summary/{h[:2]}",
+                        f"statements/{h[:2]}/",
+                        "search",
+                        "graph/",
+                        "manifest",
+                        "meta/",
+                    )
+                ),
                 p,
             )
-        self.assertEqual(set(result.written) | {"manifest.json"}, {p for p in touched if not p.startswith("meta/")} | {"manifest.json"})
+        self.assertEqual(
+            set(result.written) | {"manifest.json"},
+            {p for p in touched if not p.startswith("meta/")} | {"manifest.json"},
+        )
         self.assertEqual(manifest(out)["counts"]["statements"], 41)
 
     def test_importing_a_lemma_updates_the_lemmas_dependents(self) -> None:
@@ -180,10 +217,28 @@ class IncrementalTests(unittest.TestCase):
         (root / "models.toml").write_text(
             '[runtime]\nname = "llama.cpp"\nversion = "b1"\nurl = "https://github.com/ggml-org/llama.cpp/releases/download/b1/x.tgz"\n'
             f'sha256 = "{"e" * 64}"\n\n[[model]]\nname = "M"\nlicense = "Apache-2.0"\n'
-            f'url = "https://huggingface.co/x/y/resolve/abc/m.gguf"\nsha256 = "{sha}"\ntemplate = "chatml"\n'
+            'url = "https://huggingface.co/x/y/resolve/abc/m.gguf"\n'
+            f'sha256 = "{sha}"\ntemplate = "chatml"\n'
         )
-        reading = {"hash": h, "text": "For all n, n = n.", "model": "M", "modelSha256": sha, "runtime": "r", "cpu": "c", "promptSha256": "a" * 64, "truncated": False}
-        area = {"hash": h, "areas": ["math.LO"], "model": "M", "modelSha256": sha, "runtime": "r", "cpu": "c", "promptSha256": "b" * 64}
+        reading = {
+            "hash": h,
+            "text": "For all n, n = n.",
+            "model": "M",
+            "modelSha256": sha,
+            "runtime": "r",
+            "cpu": "c",
+            "promptSha256": "a" * 64,
+            "truncated": False,
+        }
+        area = {
+            "hash": h,
+            "areas": ["math.LO"],
+            "model": "M",
+            "modelSha256": sha,
+            "runtime": "r",
+            "cpu": "c",
+            "promptSha256": "b" * 64,
+        }
         publish.write_cache(out / "cache" / "readings", [reading])
         publish.write_cache(out / "cache" / "areas", [area])
         build(root, out, None, Counting())
@@ -240,13 +295,25 @@ class GitTests(unittest.TestCase):
         def runner(args: list[str], cwd: Path) -> str:
             if args[:2] == ["git", "push"]:
                 self.pushes += 1
-            env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"}
-            return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout
+            env = {
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+                "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            }
+            return subprocess.run(
+                args, cwd=cwd, check=True, capture_output=True, text=True, env=env
+            ).stdout
 
         self.run_git = runner
 
     def commits(self) -> int:
-        out = subprocess.run(["git", "--git-dir", str(self.remote), "rev-list", "--count", "data"], capture_output=True, text=True)
+        out = subprocess.run(
+            ["git", "--git-dir", str(self.remote), "rev-list", "--count", "data"],
+            capture_output=True,
+            text=True,
+        )
         return int(out.stdout.strip() or 0)
 
     def test_one_push_per_publish_and_none_without_changes(self) -> None:
@@ -271,7 +338,9 @@ class GitTests(unittest.TestCase):
         self.assertEqual(self.commits(), 1)
         fresh = Path(tempfile.mkdtemp()) / "again"
         publish.checkout(self.remote.as_uri(), fresh, run=self.run_git)
-        self.assertEqual(sorted(p.name for p in fresh.glob("*.json")), ["f0.json", "f1.json", "f2.json"])
+        self.assertEqual(
+            sorted(p.name for p in fresh.glob("*.json")), ["f0.json", "f1.json", "f2.json"]
+        )
 
     def test_checkout_of_a_missing_branch_starts_empty(self) -> None:
         publish.checkout(self.remote.as_uri(), self.work, run=self.run_git)
@@ -289,3 +358,50 @@ class RateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishedPrsTests(unittest.TestCase):
+    """After a deploy, the PRs whose statements this publish rebuilt move to "published"."""
+
+    def test_prs_for_the_affected_statements_only(self) -> None:
+        from tools import ledger
+
+        h1, h2 = "a" * 20, "b" * 20
+        entries = [
+            ledger.Entry(5, "alice", "proof", h1, "c" * 20, "2026-11-27T00:00:00Z"),
+            ledger.Entry(6, "bob", "statement", h2, None, "2026-11-27T00:01:00Z"),
+            ledger.Entry(4, "carol", "checkpoint", h1, "d" * 20, "2026-11-26T00:00:00Z"),
+        ]
+        text = ledger.dumps(entries)
+        self.assertEqual(publish.published_prs(text, [h1]), [4, 5])
+        self.assertEqual(publish.published_prs(text, []), [])
+        self.assertEqual(publish.published_prs("not json", [h1]), [])
+
+
+class CacheWriteTests(unittest.TestCase):
+    def test_write_cache_reports_which_statements_changed(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        e = {"hash": "a" * 20, "modelSha256": "m", "text": "x"}
+        self.assertEqual(publish.write_cache(d, [e]), {"a" * 20})
+        self.assertEqual(publish.write_cache(d, [e]), set())  # same entry again: no change
+        self.assertEqual(
+            publish.write_cache(d, [{**e, "text": "y"}, {"hash": "b" * 20, "modelSha256": "m"}]),
+            {"a" * 20, "b" * 20},
+        )
+        self.assertEqual(len(publish.read_cache(d)), 2)
+        self.assertEqual([x["hash"] for x in publish.read_cache(d, ["b" * 20])], ["b" * 20])
+
+
+class NoOpTests(unittest.TestCase):
+    def test_a_publish_with_nothing_new_changes_no_file(self) -> None:
+        root, out = repo(3), Path(tempfile.mkdtemp())
+        build(root, out, None, Counting())
+        before = {
+            p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        result = build(root, out, [], Counting())
+        after = {
+            p.relative_to(out).as_posix(): p.read_bytes() for p in out.rglob("*") if p.is_file()
+        }
+        self.assertEqual(result.written, [])
+        self.assertEqual(before, after)

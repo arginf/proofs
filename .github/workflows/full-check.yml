@@ -50,7 +50,11 @@ jobs:
           python-version: "3.12"
       - name: Audit cache from the index branch
         run: |
-          git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > audit-cache.json 2>/dev/null || echo '{}' > audit-cache.json
+          # The data branch's cache/audit/ shards; until that branch exists, the index branch's file.
+          rm -rf .audit-src && mkdir -p .audit-src
+          if git fetch -q --depth=1 origin data 2>/dev/null && git archive FETCH_HEAD cache/audit 2>/dev/null | tar -x -C .audit-src 2>/dev/null; then SRC=.audit-src/cache/audit
+          else git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > .audit-src/index.json 2>/dev/null || echo '{}' > .audit-src/index.json; SRC=.audit-src/index.json; fi
+          python3 -m tools.incremental merge-cache --out audit-cache.json "$SRC"
       - id: matrix
         env:
           IGNORE: ${{ inputs.ignore_cache && '--ignore-cache' || '' }}
@@ -119,9 +123,8 @@ jobs:
           path: audit-cache.json
           retention-days: 7
   record:
-    # Merge every job's passes into audit-cache.json on the index branch, as a new commit.
-    # main's publish job also merges this file before it replaces the branch, so a pass is lost
-    # only in a narrow race, and then the next run simply redoes it.
+    # Merge every job's passes into cache/audit/ on the data branch, as one new commit. A push
+    # that races a publish is retried; if it still fails, the next run simply redoes the work.
     needs: [plan, check]
     # Only main's results are recorded; a run dispatched on a branch just reports.
     if: ${{ !cancelled() && needs.plan.outputs.any == 'true' && github.ref == 'refs/heads/main' }}
@@ -129,6 +132,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -141,22 +147,16 @@ jobs:
         with:
           pattern: cache-part-*
           path: parts
-      - name: Commit the merged cache to the index branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+      - name: Commit the merged cache to the data branch
         run: |
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           for try in 1 2 3 4; do
-            rm -rf site && git clone -q --depth=1 --branch index "https://github.com/$REPO.git" site || exit 0
-            python3 -m tools.incremental merge-cache --out merged.json site/audit-cache.json parts/*/audit-cache.json
-            cp merged.json site/audit-cache.json
-            cd site
-            git config user.name "arginf-bot" && git config user.email "actions@users.noreply.github.com"
-            git add audit-cache.json
-            git diff --cached --quiet && exit 0
-            git commit -qm "audit cache from full check $GITHUB_RUN_ID"
-            git push -q "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" index && exit 0
-            cd .. && sleep $((try * 15))
+            rm -rf data && python3 -m tools.publish checkout --remote "$REMOTE" --dir data
+            mkdir -p data/cache/audit
+            python3 -m tools.incremental merge-cache --out data/cache/audit data/cache/audit parts/*/audit-cache.json
+            git -C data config user.name "arginf-bot" && git -C data config user.email "actions@users.noreply.github.com"
+            python3 -m tools.publish push --dir data --remote "$REMOTE" --message "audit cache from full check $GITHUB_RUN_ID" && exit 0
+            sleep $((try * 15))
           done
           echo "::warning::could not record the cache; the next run redoes this work"
   alert:

@@ -32,7 +32,9 @@ def _passed(runs: Any) -> bool:
     ok = {
         r.get("name")
         for r in items
-        if isinstance(r, dict) and r.get("status") == "completed" and r.get("conclusion") == "success"
+        if isinstance(r, dict)
+        and r.get("status") == "completed"
+        and r.get("conclusion") == "success"
     }
     return all(name in ok for name in REQUIRED)
 
@@ -51,7 +53,9 @@ def build(fetch: Fetch, repo: str = "arginf/proofs") -> dict[str, Any]:
             continue
         number, head, user = p.get("number"), p.get("head") or {}, p.get("user") or {}
         login, ref, sha = user.get("login"), head.get("ref"), head.get("sha")
-        if not (isinstance(number, int) and number > 0 and isinstance(ref, str) and isinstance(sha, str)):
+        if not (
+            isinstance(number, int) and number > 0 and isinstance(ref, str) and isinstance(sha, str)
+        ):
             continue
         if not (isinstance(login, str) and LOGIN_RE.match(login)):
             continue

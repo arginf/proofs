@@ -340,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--cache", type=Path, default=Path(".cache/readings"))
     g.add_argument("--out", type=Path, default=Path("readings.json"))
     g.add_argument("--existing", type=Path, default=None, help="readings.json to extend")
+    g.add_argument("--limit", type=int, default=None, help="at most this many statements per run")
     g.add_argument("hashes", nargs="*")
     e = sub.add_parser("embed", help="attach readings.json to index.json in place")
     e.add_argument("index", type=Path)
@@ -368,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.existing and args.existing.is_file():
             existing = json.loads(args.existing.read_text(encoding="utf-8"))
         prompts = {h: digest(user_message(root, h)) for h in hashes}
-        todo = missing(hashes, existing, model.sha256, prompts)
+        todo = missing(hashes, existing, model.sha256, prompts)[: args.limit]  # backlog waits
         existing = prune(existing, {m.sha256 for m in allow.models})
         result = merge(existing, generate(root, allow, model, todo, args.cache) if todo else [])
     except (ReadingError, OSError, ValueError) as err:

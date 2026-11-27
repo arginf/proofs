@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tools import arginf, areas, data, incremental, layout, provenance, readings
+from tools import arginf, areas, data, incremental, layout, ledger, provenance, readings
 
 MIN_GAP_SECONDS = 360  # Pages builds from the branch: at most 10 builds an hour
 RETIRED = "meta/retired.json"
@@ -74,20 +74,27 @@ def read_cache(directory: Path, hashes: Iterable[str] | None = None) -> list[dic
     return out
 
 
-def write_cache(directory: Path, entries: Iterable[dict[str, Any]]) -> None:
-    """Merge entries into their shards; an entry replaces one with the same (hash, model)."""
+def write_cache(directory: Path, entries: Iterable[dict[str, Any]]) -> set[str]:
+    """Merge entries into their shards; an entry replaces one with the same (hash, model).
+    Returns the statement hashes whose entries changed."""
     by_shard: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for e in entries:
         if layout.HASH_RE.match(str(e.get("hash", ""))):
             by_shard[str(e["hash"])[:2]].append(e)
     directory.mkdir(parents=True, exist_ok=True)
+    changed: set[str] = set()
     for shard, new in by_shard.items():
         path = directory / f"{shard}.json"
         old = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
         keyed = {(str(e.get("hash")), str(e.get("modelSha256"))): e for e in old}
-        keyed.update({(str(e["hash"]), str(e.get("modelSha256"))): e for e in new})
+        for e in new:
+            key = (str(e["hash"]), str(e.get("modelSha256")))
+            if keyed.get(key) != e:
+                keyed[key] = e
+                changed.add(str(e["hash"]))
         rows = [keyed[k] for k in sorted(keyed)]
         path.write_text(json.dumps(rows, ensure_ascii=False, indent=0) + "\n", encoding="utf-8")
+    return changed
 
 
 # The previous tree --------------------------------------------------------------------------
@@ -182,7 +189,14 @@ def _write(out: Path, rel: str, body: bytes, written: list[str]) -> None:
 
 
 def _tree_bytes(out: Path) -> int:
-    return sum(p.stat().st_size for p in out.rglob("*") if p.is_file() and ".git" not in p.parts)
+    """Published bytes: everything but git, the manifest itself and meta/ bookkeeping."""
+    return sum(
+        p.stat().st_size
+        for p in out.rglob("*")
+        if p.is_file()
+        and not {".git", "meta"} & set(p.relative_to(out).parts)
+        and p.name != "manifest.json"
+    )
 
 
 def build(
@@ -199,8 +213,12 @@ def build(
     commit (None: rebuild everything)."""
     out.mkdir(parents=True, exist_ok=True)
     prev = Previous(out)
+    deleted = 0
     for rel in _load_json(out / RETIRED, []):
-        (out / str(rel)).unlink(missing_ok=True)
+        path = out / str(rel)
+        if path.is_file():
+            path.unlink()
+            deleted += 1
     existing = set(incremental.all_statements(root))
     full = (
         prev.manifest is None
@@ -220,24 +238,27 @@ def build(
         targets = list(new)
     records = {h: record_fn(root, h, curation) for h in targets}
     if not full:
-        lemmas = sorted({d for r in records.values() for d in r["dependencies"]} & existing - set(records))
+        lemmas = sorted(
+            {d for r in records.values() for d in r["dependencies"]} & existing - set(records)
+        )
         records.update({h: record_fn(root, h, curation) for h in lemmas})
     affected = sorted(records)
     result = Result(full=full, affected=affected)
 
     # Dependents: from everything (full) or previous ones plus new edges (incremental).
+    dependents: dict[str, list[str]]
     if full:
         dependents = data.dependents_of(records.values())
     else:
-        dependents = {}
+        found: dict[str, set[str]] = {}
         for h in affected:
             old = prev.detail(h)
-            dependents[h] = set(old.get("dependents", []) if old else [])
+            found[h] = set(old.get("dependents", []) if old else [])
         for h, r in records.items():
             for d in r["dependencies"]:
-                if d in dependents:
-                    dependents[d].add(h)
-        dependents = {h: sorted(v) for h, v in dependents.items()}
+                if d in found:
+                    found[d].add(h)
+        dependents = {h: sorted(v) for h, v in found.items()}
 
     # Readings and areas from the caches; provenance carried forward, looked up only if new.
     allowed = _allowed(root)
@@ -310,7 +331,13 @@ def build(
         {
             "hash": h,
             "dependencies": row[data.SUMMARY_COLS.index("deps")],
-            "areas": {"codes": [area_list[i]["code"] for i in row[data.SUMMARY_COLS.index("areas")] if i < len(area_list)]},
+            "areas": {
+                "codes": [
+                    area_list[i]["code"]
+                    for i in row[data.SUMMARY_COLS.index("areas")]
+                    if i < len(area_list)
+                ]
+            },
         }
         for h, row in all_rows.items()
     ]
@@ -331,12 +358,16 @@ def build(
     retire |= set(prev.files.values()) - set(files.values())
     retire -= set(result.written)
     result.retired = sorted(retire)
-    _write(out, RETIRED, data.dump(result.retired), [])
+    if result.written or retire or deleted:
+        _write(out, RETIRED, data.dump(result.retired), [])
     total = _tree_bytes(out)
+    if not result.written and prev.manifest is not None:
+        result.bytes = int(prev.manifest.get("bytes", total))
+        return result  # nothing new: leave the tree (and its commit) exactly as it was
     body = data.manifest(commit, counts, area_list, files, mode, total)
     _write(out, "manifest.json", body, result.written)
-    result.bytes = _tree_bytes(out)
-    _record_size(out, result.bytes)
+    result.bytes = total
+    _record_size(out, total)
     return result
 
 
@@ -348,7 +379,9 @@ def _detail_at(out: Path, h: str, row: list[Any]) -> dict[str, Any]:
 def _tokens_of(r: Mapping[str, Any] | None, names: Mapping[str, str]) -> set[str]:
     if not r:
         return set()
-    return data.tokens(str(r.get("statement", "")), data.first_reading(r), data.area_codes(r), names)
+    return data.tokens(
+        str(r.get("statement", "")), data.first_reading(r), data.area_codes(r), names
+    )
 
 
 def _update_tokens(
@@ -370,7 +403,9 @@ def _update_tokens(
         key = f"search/{n:02x}"
         path = files.get(key)
         postings: dict[str, list[str] | None] = (
-            json.loads((out / path).read_text(encoding="utf-8")) if path and (out / path).is_file() else {}
+            json.loads((out / path).read_text(encoding="utf-8"))
+            if path and (out / path).is_file()
+            else {}
         )
         for t, h, add in changes:
             current = postings.get(t, [])
@@ -401,6 +436,17 @@ def _record_size(out: Path, total: int) -> None:
         history[-1] = {"t": history[-1]["t"], "bytes": total}
     (out / SIZE_HISTORY).parent.mkdir(parents=True, exist_ok=True)
     (out / SIZE_HISTORY).write_bytes(data.dump(history))
+
+
+def published_prs(ledger_text: str, affected: Iterable[str]) -> list[int]:
+    """PR numbers in the ledger whose statement this publish rebuilt (for `announce published`;
+    it only moves a comment on from "merged", so repeats are harmless)."""
+    try:
+        entries = ledger.loads(ledger_text)
+    except (ledger.LedgerError, ValueError, KeyError, TypeError):
+        return []
+    wanted = set(affected)
+    return sorted({e.pr for e in entries if e.statement in wanted})
 
 
 # Git: the data branch -----------------------------------------------------------------------
@@ -471,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--full", action="store_true")
     b.add_argument("--also", nargs="*", default=[])
     b.add_argument("--extra", nargs="*", default=[], help="NAME=FILE, e.g. reviews=reviews.json")
+    b.add_argument("--affected-out", type=Path, default=None, help="write rebuilt hashes here")
     p = sub.add_parser("push")
     p.add_argument("--dir", type=Path, required=True)
     p.add_argument("--remote", required=True)
@@ -480,6 +527,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--remote", required=True)
     j = sub.add_parser("cache-join")
     j.add_argument("--dir", type=Path, required=True)
+    pp = sub.add_parser("published-prs", help="PRs to mark published (space-separated)")
+    pp.add_argument("--ledger", type=Path, required=True)
+    pp.add_argument("--affected", type=Path, required=True)
     sp = sub.add_parser("cache-split")
     sp.add_argument("--dir", type=Path, required=True)
     sp.add_argument("file", type=Path)
@@ -506,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
                 if Path(file).is_file():
                     extra[name] = Path(file).read_bytes()
             r = build(root, args.dir, args.commit, changed, args.also, extra)
+            if args.affected_out:
+                args.affected_out.write_text(" ".join(r.affected) + "\n", encoding="utf-8")
             print(
                 f"{'full' if r.full else 'incremental'}: {len(r.affected)} statement(s), "
                 f"{len(r.written)} file(s) written, {len(r.retired)} retired, {r.bytes} bytes"
@@ -514,11 +566,20 @@ def main(argv: list[str] | None = None) -> int:
             print("pushed" if push(args.dir, args.remote, args.message) else "nothing to publish")
         elif args.cmd == "squash":
             squash(args.dir, args.remote)
+        elif args.cmd == "published-prs":
+            text = args.ledger.read_text(encoding="utf-8") if args.ledger.is_file() else ""
+            affected = (
+                args.affected.read_text(encoding="utf-8").split() if args.affected.is_file() else []
+            )
+            print(" ".join(str(n) for n in published_prs(text, affected)))
         elif args.cmd == "cache-join":
             json.dump(read_cache(args.dir), sys.stdout, ensure_ascii=False, indent=1)
             print()
         elif args.cmd == "cache-split":
-            write_cache(args.dir, json.loads(args.file.read_text(encoding="utf-8")))
+            changed_hashes = write_cache(
+                args.dir, json.loads(args.file.read_text(encoding="utf-8"))
+            )
+            print(" ".join(sorted(changed_hashes)))
     except (subprocess.CalledProcessError, OSError, ValueError, arginf.ToolError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1

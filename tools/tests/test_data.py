@@ -17,15 +17,28 @@ from collections import Counter
 from tools import data
 
 MB = 1024 * 1024
-AREAS = [{"code": c, "name": n} for c, n in (("math.NT", "Number theory"), ("cs.CC", "Computational complexity"), ("math.LO", "Logic"), ("cs.CR", "Cryptography and security"))]
-WORDS = "Nat Int Real Finset Polynomial Prime Even Odd Function Injective Surjective Group Ring Field Matrix Graph Set List Bool OneWay SAT P NP".split()
+AREAS = [
+    {"code": c, "name": n}
+    for c, n in (
+        ("math.NT", "Number theory"),
+        ("cs.CC", "Computational complexity"),
+        ("math.LO", "Logic"),
+        ("cs.CR", "Cryptography and security"),
+    )
+]
+WORDS = (
+    "Nat Int Real Finset Polynomial Prime Even Odd Function Injective Surjective Group Ring "
+    "Field Matrix Graph Set List Bool OneWay SAT P NP"
+).split()
 
 
 def h(i: int, salt: str = "s") -> str:
     return hashlib.sha256(f"{salt}{i}".encode()).hexdigest()[:20]
 
 
-def record(i: int, rng: random.Random, attempts: int = 1, lean_bytes: int = 200) -> dict[str, object]:
+def record(
+    i: int, rng: random.Random, attempts: int = 1, lean_bytes: int = 200
+) -> dict[str, object]:
     """A statement as arginf.build_index (plus embeds) produces it."""
     words = rng.sample(WORDS, 4)
     prop = f"∀ n : {words[0]}, {words[1]}.{words[2]} (n + {i}) → {words[3]} n"
@@ -50,7 +63,10 @@ def record(i: int, rng: random.Random, attempts: int = 1, lean_bytes: int = 200)
     return {
         "hash": h(i),
         "statement": prop,
-        "statementLean": f"import Mathlib\n\nnamespace Theorems.«{h(i)}»\n\ndef statement : Prop :=\n  {prop}\n\nend Theorems.«{h(i)}»\n",
+        "statementLean": (
+            f"import Mathlib\n\nnamespace Theorems.«{h(i)}»\n\ndef statement : Prop :=\n"
+            f"  {prop}\n\nend Theorems.«{h(i)}»\n"
+        ),
         "status": "proved",
         "proofs": [atts[0]["hash"]] if atts else [],
         "dependencies": [h(rng.randrange(i))] if i and rng.random() < 0.3 else [],
@@ -136,7 +152,9 @@ class Big(unittest.TestCase):
         manifest = json.loads(self.files["manifest.json"])
         target = h(4242)
         shard = json.loads(self.files[manifest["files"][f"summary/{target[:2]}"]])
-        row = dict(zip(shard["cols"], next(r for r in shard["rows"] if r[0] == target), strict=True))
+        row = dict(
+            zip(shard["cols"], next(r for r in shard["rows"] if r[0] == target), strict=True)
+        )
         detail = json.loads(self.files[data.detail_path(target, row["detail"])])
         self.assertEqual(detail["hash"], target)
         self.assertEqual(detail["attempts"][0]["lean"], "x" * 200)
@@ -177,7 +195,15 @@ class SmallCatalogTests(unittest.TestCase):
         after = data.render([*cat[:7], changed, *cat[8:]], AREAS, commit="c" * 40)
         diff = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
         shard = str(cat[7]["hash"])[:2]
-        self.assertTrue(all(p.startswith((f"summary/{shard}", f"statements/{shard}/", "search", "graph/", "manifest")) for p in diff), diff)
+        self.assertTrue(
+            all(
+                p.startswith(
+                    (f"summary/{shard}", f"statements/{shard}/", "search", "graph/", "manifest")
+                )
+                for p in diff
+            ),
+            diff,
+        )
 
     def test_graph_overview_counts_areas_and_cross_area_dependencies(self) -> None:
         files = data.render(catalog(200), AREAS, commit="c" * 40)
@@ -216,7 +242,12 @@ class HugeStatementTests(unittest.TestCase):
 
 class TokenTests(unittest.TestCase):
     def test_tokens_are_lowercase_words_and_area_codes(self) -> None:
-        toks = data.tokens("∀ n : Nat, Nat.Prime (n + 1) → Even n", "For every n, it holds.", ["cs.CC"], {"cs.CC": "Computational complexity"})
+        toks = data.tokens(
+            "∀ n : Nat, Nat.Prime (n + 1) → Even n",
+            "For every n, it holds.",
+            ["cs.CC"],
+            {"cs.CC": "Computational complexity"},
+        )
         for t in ("nat", "prime", "even", "every", "holds", "cs.cc", "computational", "complexity"):
             self.assertIn(t, toks)
         self.assertNotIn("n", toks)  # one-letter tokens are noise

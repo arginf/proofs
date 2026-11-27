@@ -62,7 +62,9 @@ def evaluate(history: Sequence[dict[str, Any]], now: float, cap: int = CAP_BYTES
         level = "plan"
     reasons.append(f"{latest / 1e6:.0f} MB published, {fraction:.0%} of the 1 GB Pages cap")
     if runway is not None:
-        reasons.append(f"about {runway:.0f} days until the cap at the last {WINDOW_DAYS} days' growth")
+        reasons.append(
+            f"about {runway:.0f} days until the cap at the last {WINDOW_DAYS} days' growth"
+        )
     return Verdict(level, latest, fraction, runway, reasons)
 
 

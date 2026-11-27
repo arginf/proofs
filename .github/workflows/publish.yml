@@ -1,0 +1,162 @@
+# Publishes the data tree (tools/data.py) to the `data` branch, which GitHub Pages serves at
+# data.arginf.com. Runs after each verified main run. Pages builds from the branch (at most about
+# 10 builds an hour), so publishes are at least 6 minutes apart: a run waits out the gap, then
+# publishes whatever main is by then, so bursts of merges coalesce into one publish. One commit
+# and one push per run, carrying only the files that changed. English readings and area labels
+# are added afterwards by enrich.yml, so the model is never on this path.
+#
+# Weekly, the branch's history is squashed to one commit so the repository stays small.
+# Today's index.json on the `index` branch keeps being published by main.yml in parallel.
+name: publish
+on:
+  workflow_run:
+    workflows: [main]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "41 5 * * 0" # Sundays: squash the data branch
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Rebuild every statement's files
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: data-branch
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # the data branch
+      actions: read # main's artifacts (audit cache, ledger)
+      pull-requests: write # move status comments to "published"
+      pages: read # wait for the Pages build of our commit
+    outputs:
+      level: ${{ steps.guard.outputs.level }}
+      percent: ${{ steps.guard.outputs.percent }}
+      runway: ${{ steps.guard.outputs.runway }}
+      summary: ${{ steps.guard.outputs.summary }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0 # the diff since the last publish, and provenance of new attempts
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Check out the data branch
+        run: python3 -m tools.publish checkout --remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" --dir data
+      - name: At most one publish every 6 minutes, then take main as it is now
+        run: |
+          python3 -m tools.publish wait --dir data
+          git fetch -q origin main && git checkout -q --detach origin/main
+      - name: Audit cache and ledger from the latest verified main run; reviews from the API
+        run: |
+          RUN=$(gh run list -R "$REPO" --workflow main.yml --branch main --status success -L 1 --json databaseId -q '.[0].databaseId')
+          if [ -n "$RUN" ]; then
+            gh run download "$RUN" -R "$REPO" -n index -D main-out || echo "no index artifact"
+            gh run download "$RUN" -R "$REPO" -n ledger -D ledger-out || echo "no ledger artifact"
+          fi
+          mkdir -p data/cache/audit
+          if [ -f main-out/audit-cache.json ]; then
+            python3 -m tools.incremental merge-cache --out data/cache/audit data/cache/audit main-out/audit-cache.json
+          fi
+          python3 -m tools.reviews > reviews.json
+      - name: Build (only what changed since the last publish)
+        env:
+          FULL: ${{ inputs.full && '--full' || '' }}
+        run: |
+          python3 -m tools.publish build --dir data --commit "$(git rev-parse HEAD)" $FULL \
+            --extra reviews=reviews.json ledger=ledger-out/ledger.json --affected-out affected.txt
+      - name: Size and runway
+        id: guard
+        run: python3 -m tools.guard check --dir data --output "$GITHUB_OUTPUT"
+      - name: Push (one commit, one push)
+        id: push
+        run: |
+          git -C data config user.name "arginf-bot" && git -C data config user.email "actions@users.noreply.github.com"
+          OUT=$(python3 -m tools.publish push --dir data --remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" --message "data for $(git rev-parse --short HEAD)")
+          echo "$OUT"
+          if [ "$OUT" == "pushed" ]; then echo "sha=$(git -C data rev-parse HEAD)" >> "$GITHUB_OUTPUT"; fi
+      - name: Wait for Pages to deploy it, then mark the PRs published
+        if: steps.push.outputs.sha != ''
+        env:
+          SHA: ${{ steps.push.outputs.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          COMMENT_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 30); do
+            STATE=$(gh api "repos/$REPO/pages/builds/latest" -q '"\(.commit) \(.status)"' 2>/dev/null || echo "")
+            if [ "$STATE" == "$SHA built" ]; then break; fi
+            if [ "$STATE" == "$SHA errored" ]; then echo "::error::Pages failed to build $SHA"; exit 1; fi
+            sleep 10
+          done
+          [ "$STATE" == "$SHA built" ] || { echo "::warning::Pages has not deployed $SHA yet; not marking PRs"; exit 0; }
+          PRS=$(python3 -m tools.publish published-prs --ledger ledger-out/ledger.json --affected affected.txt)
+          if [ -n "$PRS" ]; then python3 -m tools.announce published $PRS; else echo "no PRs to mark"; fi
+  data-size:
+    # The guard: open or update an issue at 40% of the 1 GB Pages cap (or under 180 days of
+    # runway), mark it urgent and fail this check at 60% (or under 60 days). Publishing above has
+    # already happened: it never blocks on this.
+    needs: publish
+    if: ${{ needs.publish.outputs.level == 'plan' || needs.publish.outputs.level == 'urgent' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      LEVEL: ${{ needs.publish.outputs.level }}
+      SUMMARY: ${{ needs.publish.outputs.summary }}
+    steps:
+      - name: Open or update the issue
+        run: |
+          TITLE="Data size: plan the S3 move"
+          BODY="Published data: ${SUMMARY}. GitHub Pages refuses sites over 1 GB. Move data.arginf.com to S3 + CloudFront with the runbook in arginf/arginf (docs/data-host-runbook.md). Level: ${LEVEL}."
+          N=$(gh issue list -R "$REPO" --label data-size --state open --json number -q '.[0].number')
+          if [ -z "$N" ]; then
+            gh issue create -R "$REPO" --title "$TITLE" --body "$BODY" --label data-size --assignee adampdavis
+          else
+            gh issue edit "$N" -R "$REPO" --body "$BODY" --add-assignee adampdavis
+          fi
+          if [ "$LEVEL" == "urgent" ]; then
+            N=$(gh issue list -R "$REPO" --label data-size --state open --json number -q '.[0].number')
+            gh issue edit "$N" -R "$REPO" --add-label urgent
+            echo "::error::Published data is past 60% of the Pages cap or under 60 days of runway: ${SUMMARY}"
+            exit 1
+          fi
+  squash:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Squash the data branch to one commit
+        run: |
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          python3 -m tools.publish checkout --remote "$REMOTE" --dir data
+          git -C data config user.name "arginf-bot" && git -C data config user.email "actions@users.noreply.github.com"
+          python3 -m tools.publish squash --dir data --remote "$REMOTE"

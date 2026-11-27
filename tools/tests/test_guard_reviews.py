@@ -34,13 +34,19 @@ class GuardTests(unittest.TestCase):
         now = 1_800_000_000.0
         self.assertEqual(guard.evaluate(self.history([(0, 0.41)], now), now).level, "plan")
         # 0.30 GB, growing 0.1 GB / 30 days -> 210 days to 1 GB: ok; 0.15 GB / 30 days -> 140: plan.
-        self.assertEqual(guard.evaluate(self.history([(30, 0.20), (0, 0.30)], now), now).level, "ok")
-        self.assertEqual(guard.evaluate(self.history([(30, 0.15), (0, 0.30)], now), now).level, "plan")
+        self.assertEqual(
+            guard.evaluate(self.history([(30, 0.20), (0, 0.30)], now), now).level, "ok"
+        )
+        self.assertEqual(
+            guard.evaluate(self.history([(30, 0.15), (0, 0.30)], now), now).level, "plan"
+        )
 
     def test_60_percent_or_60_days_is_urgent(self) -> None:
         now = 1_800_000_000.0
         self.assertEqual(guard.evaluate(self.history([(0, 0.61)], now), now).level, "urgent")
-        self.assertEqual(guard.evaluate(self.history([(30, 0.10), (0, 0.50)], now), now).level, "urgent")
+        self.assertEqual(
+            guard.evaluate(self.history([(30, 0.10), (0, 0.50)], now), now).level, "urgent"
+        )
 
     def test_runway_needs_a_day_of_history_and_growth(self) -> None:
         now = 1_800_000_000.0
@@ -51,7 +57,9 @@ class GuardTests(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         (d / "meta").mkdir()
         now = 1_800_000_000
-        (d / "meta" / "size-history.json").write_text(json.dumps([{"t": now, "bytes": int(0.7 * GB)}]))
+        (d / "meta" / "size-history.json").write_text(
+            json.dumps([{"t": now, "bytes": int(0.7 * GB)}])
+        )
         out = d / "github_output"
         code = guard.main(["check", "--dir", str(d), "--output", str(out), "--now", str(now)])
         self.assertEqual(code, 0)
@@ -99,11 +107,20 @@ class ReviewsTests(unittest.TestCase):
         pulls = [
             pull(7, f"{H}/{A}", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"),
             pull(8, f"{H}/x", "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"),  # scope ok, lean failed
-            pull(9, "infra/thing", "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"),  # not a theorem branch
+            pull(
+                9, "infra/thing", "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+            ),  # not a theorem branch
             pull(10, f"{H}/y", "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", draft=True),
-            pull(11, "0123456789ab/old", "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"),  # 12-digit branch: not a current hash
+            pull(
+                11, "0123456789ab/old", "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+            ),  # 12-digit branch: not a current hash
         ]
-        checks = {"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1": runs("success", "success"), "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2": runs("success", "failure"), "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4": runs("success", "success"), "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5": runs("success", "success")}
+        checks = {
+            "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1": runs("success", "success"),
+            "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2": runs("success", "failure"),
+            "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4": runs("success", "success"),
+            "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5": runs("success", "success"),
+        }
         out = reviews.build(self.fetch(pulls, checks))
         self.assertEqual(
             out["pulls"],
@@ -117,10 +134,17 @@ class ReviewsTests(unittest.TestCase):
     def test_rejects_hostile_values(self) -> None:
         bad = [
             pull(1, f"{H}/x", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", login="<b>x</b>"),
-            {**pull(2, f"{H}/x", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "html_url": "javascript:alert(1)"},
+            {
+                **pull(2, f"{H}/x", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"),
+                "html_url": "javascript:alert(1)",
+            },
             {**pull(3, f"{H}/x", "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"), "number": "3"},
         ]
-        out = reviews.build(self.fetch(bad, {"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1": runs("success", "success")}))
+        out = reviews.build(
+            self.fetch(
+                bad, {"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1": runs("success", "success")}
+            )
+        )
         self.assertEqual(out["pulls"], [])
 
 

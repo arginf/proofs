@@ -1,0 +1,62 @@
+# The second publish: English readings and area labels for statements that don't have them yet,
+# from the pinned open-weights model (models.toml), then a publish of just those statements.
+# Runs after each publish, so the model (a weights download plus ~30 s per statement) is never
+# on the path from a merge to the site. At most 50 statements per run; any backlog (for example
+# after a prompt or area-list change) drains over the next runs.
+name: enrich
+on:
+  workflow_run:
+    workflows: [publish]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: enrich
+  cancel-in-progress: false
+jobs:
+  enrich:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # the data branch
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      LIMIT: 50
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Check out the data branch
+        run: python3 -m tools.publish checkout --remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" --dir data
+      - name: Readings and area labels for statements without them
+        id: gen
+        run: |
+          MODEL=$(python3 -c "import tomllib; print(tomllib.load(open('models.toml','rb'))['model'][0]['name'])")
+          python3 -m tools.publish cache-join --dir data/cache/readings > existing-readings.json
+          python3 -m tools.publish cache-join --dir data/cache/areas > existing-areas.json
+          # Only missing statements cost model time; the weights download only if any are missing.
+          python3 -m tools.readings generate --model "$MODEL" --existing existing-readings.json --out readings.json --limit "$LIMIT"
+          python3 -m tools.areas generate --model "$MODEL" --existing existing-areas.json --out areas.json --limit "$LIMIT"
+          A=$(python3 -m tools.publish cache-split --dir data/cache/readings readings.json)
+          B=$(python3 -m tools.publish cache-split --dir data/cache/areas areas.json)
+          echo "hashes=$(echo $A $B | tr ' ' '\n' | sort -u | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - name: Publish those statements (6 minutes after the last publish)
+        if: steps.gen.outputs.hashes != ' ' && steps.gen.outputs.hashes != ''
+        env:
+          HASHES: ${{ steps.gen.outputs.hashes }}
+        run: |
+          python3 -m tools.publish wait --dir data
+          python3 -m tools.publish build --dir data --commit "$(git rev-parse HEAD)" --also $HASHES
+          git -C data config user.name "arginf-bot" && git -C data config user.email "actions@users.noreply.github.com"
+          # If a publish pushed meanwhile, this push is rejected: the caches are saved in this
+          # run's log only, and the next run (after the next publish) redoes the work.
+          python3 -m tools.publish push --dir data --remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" --message "readings and areas for $(echo $HASHES | wc -w) statement(s)" \
+            || echo "::warning::the data branch moved; the next enrich run retries"

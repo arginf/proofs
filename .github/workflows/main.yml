@@ -84,7 +84,11 @@ jobs:
         env:
           REPO: ${{ github.repository }}
         run: |
-          git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > audit-cache.json 2>/dev/null || echo '{}' > audit-cache.json
+          # The data branch's cache/audit/ shards; until that branch exists, the index branch's file.
+          rm -rf .audit-src && mkdir -p .audit-src
+          if git fetch -q --depth=1 origin data 2>/dev/null && git archive FETCH_HEAD cache/audit 2>/dev/null | tar -x -C .audit-src 2>/dev/null; then SRC=.audit-src/cache/audit
+          else git fetch -q --depth=1 origin index 2>/dev/null && git show FETCH_HEAD:audit-cache.json > .audit-src/index.json 2>/dev/null || echo '{}' > .audit-src/index.json; SRC=.audit-src/index.json; fi
+          python3 -m tools.incremental merge-cache --out audit-cache.json "$SRC"
       - name: Proof matches statement, allowed axioms only (cached passes are skipped)
         if: steps.plan.outputs.any == 'true'
         env:
