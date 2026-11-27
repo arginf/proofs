@@ -28,7 +28,8 @@ INFO = {A1: (40, 0), A2: (25, 0), A3: (30, 2)}  # attempt -> (size, open goals)
 class BodyTests(unittest.TestCase):
     def test_queued_body_says_accepted_and_nothing_about_badges(self) -> None:
         for kind in ledger.KINDS:
-            body = announce.queued_body(kind)
+            body = announce.queued_body(kind, 7)
+            self.assertIn(announce.pr_url(7), body)
             self.assertIn(announce.MARKER, body)
             self.assertIn("queued", body.lower())
             for word in ("first", "shortest", "badge"):
@@ -38,6 +39,7 @@ class BodyTests(unittest.TestCase):
     def test_merged_bodies_and_badges(self) -> None:
         first = announce.merged_body(ENTRIES[1], ENTRIES, INFO)
         self.assertIn("Verified", first)
+        self.assertIn(announce.pr_url(2), first)
         self.assertIn(announce.FIRST, first)
         self.assertNotIn(announce.SHORTEST, first)  # A2 is shorter
         self.assertIn(announce.CREDIT, first)  # first proof of someone else's statement

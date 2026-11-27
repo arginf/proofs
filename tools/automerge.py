@@ -402,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda method, url, body=None: _api(method, url, comment_token, body),
         base,
         int(number),
-        announce.queued_body(d.kind),
+        announce.queued_body(d.kind, int(number)),
     )
     print(f"queued #{number} ({d.kind}); the merge queue re-checks it with main before merging")
     return 0

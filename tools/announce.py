@@ -33,11 +33,20 @@ def statement_url(h: str) -> str:
     return f"{SITE}/theorems/{h}"
 
 
-def queued_body(kind: str) -> str:
+def pr_url(number: int) -> str:
+    return f"{SITE}/pr/{number}"
+
+
+def _track(number: int) -> str:
+    return f"\n\n[Track this PR live]({pr_url(number)})"
+
+
+def queued_body(kind: str, number: int) -> str:
     what = _WHAT[kind]
     return (
         f"{MARKER}\n✅ **Lean accepted this {what}.** It's queued to merge, and the merge queue "
         "checks it once more together with the latest `main` (usually within a few minutes)."
+        + _track(number)
         + FOOTER
     )
 
@@ -82,7 +91,7 @@ def merged_body(
         text = f"🏁 **Verified and merged.** See it on [the statement's page]({url})."
         if badges:
             text += "\n\n" + "\n".join(f"- {b}" for b in badges)
-    return f"{MARKER}\n{text}{FOOTER}"
+    return f"{MARKER}\n{text}{_track(en.pr)}{FOOTER}"
 
 
 def to_announce(
