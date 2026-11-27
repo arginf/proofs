@@ -252,18 +252,22 @@ def _api(method: str, url: str, token: str, body: dict[str, Any] | None = None) 
     return json.loads(raw) if raw else None
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
-    if len(args) != 1 or not re.fullmatch(r"[0-9a-f]{40}", args[0]):
-        print("usage: automerge <head-sha>", file=sys.stderr)
-        return 2
-    (sha,) = args
-    if not trusted_run(os.environ.get("WORKFLOW_PATH", ""), os.environ.get("WORKFLOW_EVENT", "")):
-        print("skip: not a pull_request run of " + PR_WORKFLOW_PATH)
-        return 0
-    repo = os.environ["GITHUB_REPOSITORY"]
-    token = os.environ["GH_TOKEN"]
-    base = f"https://api.github.com/repos/{repo}"
+def status_stage(action: str, conclusion: str | None) -> str | None:
+    """The stage a "PR checks" workflow_run event reports (success is the merge job's)."""
+    if action == "requested":
+        return "checks"
+    if action == "completed" and conclusion in ("failure", "timed_out", "startup_failure"):
+        return "failed"
+    return None
+
+
+def eligible(filenames: list[str]) -> bool:
+    """Status comments go only on PRs that add theorem files (the ones automerge handles)."""
+    return bool(filenames) and all(not isinstance(layout.parse_path(f), str) for f in filenames)
+
+
+def _find_pr(base: str, token: str, sha: str) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """The single open PR to main whose head is exactly `sha`, and all open PRs."""
     # workflow_run doesn't list fork PRs, so find the open PR whose head is exactly this commit.
     open_prs = all_pages(
         lambda page: _api(
@@ -273,15 +277,74 @@ def main(argv: list[str] | None = None) -> int:
     matches = [p for p in open_prs if p["head"]["sha"] == sha]
     if len(matches) != 1:
         print("skip: no single open PR at this commit (closed, updated or ambiguous)")
-        return 0
-    number = str(matches[0]["number"])
-    pr = _api("GET", f"{base}/pulls/{number}", token)
+        return None
+    pr = _api("GET", f"{base}/pulls/{matches[0]['number']}", token)
     if pr["head"]["sha"] != sha or pr["state"] != "open" or pr["base"]["ref"] != "main":
         print("skip: the PR moved on since this check ran")
-        return 0
-    login = str(pr["user"]["login"])
-    files = all_pages(
+        return None
+    return pr, open_prs
+
+
+def _files(base: str, token: str, number: int) -> list[dict[str, Any]]:
+    return all_pages(
         lambda page: _api("GET", f"{base}/pulls/{number}/files?per_page=100&page={page}", token)
+    )
+
+
+def _comment(base: str, number: int, body: str) -> None:
+    """Status comment with the workflow's own token, quoting nothing from the PR."""
+    token = os.environ.get("COMMENT_TOKEN") or os.environ["GH_TOKEN"]
+    announce.upsert(lambda method, url, b=None: _api(method, url, token, b), base, number, body)
+
+
+def status(sha: str, stage: str) -> int:
+    """Post or update the status comment at `checks` or `failed`."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    token = os.environ["GH_TOKEN"]
+    base = f"https://api.github.com/repos/{repo}"
+    found = _find_pr(base, token, sha)
+    if found is None:
+        return 0
+    number = int(found[0]["number"])
+    files = _files(base, token, number)
+    if int(found[0]["changed_files"]) != len(files) or not eligible(
+        [str(f["filename"]) for f in files]
+    ):
+        print(f"skip: #{number} is not a theorem PR")
+        return 0
+    _comment(
+        base,
+        number,
+        announce.checks_body(number) if stage == "checks" else announce.failed_body(number),
+    )
+    print(f"#{number}: {stage}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    if not trusted_run(os.environ.get("WORKFLOW_PATH", ""), os.environ.get("WORKFLOW_EVENT", "")):
+        print("skip: not a pull_request run of " + PR_WORKFLOW_PATH)
+        return 0
+    if len(args) == 3 and args[0] == "status" and re.fullmatch(r"[0-9a-f]{40}", args[1]):
+        stage = status_stage(args[2], os.environ.get("WORKFLOW_CONCLUSION") or None)
+        return status(args[1], stage) if stage else 0
+    if len(args) != 1 or not re.fullmatch(r"[0-9a-f]{40}", args[0]):
+        print("usage: automerge <head-sha> | automerge status <head-sha> <action>", file=sys.stderr)
+        return 2
+    (sha,) = args
+    repo = os.environ["GITHUB_REPOSITORY"]
+    token = os.environ["GH_TOKEN"]
+    base = f"https://api.github.com/repos/{repo}"
+    found = _find_pr(base, token, sha)
+    if found is None:
+        return 0
+    pr, open_prs = found
+    number = str(pr["number"])
+    login = str(pr["user"]["login"])
+    files = _files(base, token, int(number))
+    theorem_pr = int(pr["changed_files"]) == len(files) and eligible(
+        [str(f["filename"]) for f in files]
     )
 
     def statement_exists(h: str) -> bool:
@@ -364,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"{'merge' if d.merge else 'skip'}: {d.reason}")
     if not d.merge:
+        if theorem_pr:
+            _comment(base, int(number), announce.held_body(int(number)))
         return 0
     # Moderation gate: anything suspicious waits for a maintainer instead of merging.
     lean_texts = [attempt_lean(f["filename"]) for f in files if f["filename"].endswith(".lean")]
@@ -386,8 +451,12 @@ def main(argv: list[str] | None = None) -> int:
                 + "."
             },
         )
+        _comment(base, int(number), announce.held_body(int(number)))
         print(f"held for review: {'; '.join(reasons)}")
         return 0
+    h = str(d.theorem)
+    a = d.attempt if d.kind != "statement" else None
+    _comment(base, int(number), announce.queued_body(d.kind, int(number), h, a, stage="accepted"))
     enqueue(
         lambda method, url, body=None: _api(method, url, token, body),
         base,
@@ -396,14 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         sha,
         d.kind,
     )
-    # Status comment with the workflow's own token, quoting nothing from the PR (tools/announce.py).
-    comment_token = os.environ.get("COMMENT_TOKEN") or token
-    announce.upsert(
-        lambda method, url, body=None: _api(method, url, comment_token, body),
-        base,
-        int(number),
-        announce.queued_body(d.kind, int(number)),
-    )
+    _comment(base, int(number), announce.queued_body(d.kind, int(number), h, a))
     print(f"queued #{number} ({d.kind}); the merge queue re-checks it with main before merging")
     return 0
 

@@ -284,5 +284,23 @@ class QueueTests(unittest.TestCase):
             )
 
 
+class StatusTests(unittest.TestCase):
+    def test_stage_for_each_workflow_event(self) -> None:
+        self.assertEqual(automerge.status_stage("requested", None), "checks")
+        self.assertEqual(automerge.status_stage("in_progress", None), None)
+        self.assertEqual(automerge.status_stage("completed", "failure"), "failed")
+        self.assertEqual(automerge.status_stage("completed", "timed_out"), "failed")
+        self.assertIsNone(automerge.status_stage("completed", "success"))  # the merge job's
+        self.assertIsNone(automerge.status_stage("completed", "cancelled"))  # superseded push
+        self.assertIsNone(automerge.status_stage("completed", "skipped"))
+
+    def test_only_theorem_prs_get_status_comments(self) -> None:
+        self.assertTrue(automerge.eligible([f["filename"] for f in ATTEMPT]))
+        self.assertTrue(automerge.eligible([f"Theorems/{H[:2]}/{H}/Statement.lean"]))
+        self.assertFalse(automerge.eligible([]))
+        self.assertFalse(automerge.eligible([f["filename"] for f in ATTEMPT] + ["README.md"]))
+        self.assertFalse(automerge.eligible([".github/workflows/pr.yml"]))
+
+
 if __name__ == "__main__":
     unittest.main()

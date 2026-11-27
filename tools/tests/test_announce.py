@@ -28,7 +28,7 @@ INFO = {A1: (40, 0), A2: (25, 0), A3: (30, 2)}  # attempt -> (size, open goals)
 class BodyTests(unittest.TestCase):
     def test_queued_body_says_accepted_and_nothing_about_badges(self) -> None:
         for kind in ledger.KINDS:
-            body = announce.queued_body(kind, 7)
+            body = announce.queued_body(kind, 7, S, A1 if kind != "statement" else None)
             self.assertIn(announce.pr_url(7), body)
             self.assertIn(announce.MARKER, body)
             self.assertIn("queued", body.lower())
@@ -117,6 +117,46 @@ class UpsertTests(unittest.TestCase):
         self.assertEqual(calls[-1], ("POST", f"{base}/issues/7/comments", {"body": "hello"}))
 
 
+class PublishTests(unittest.TestCase):
+    base = "https://api.github.com/repos/o/r"
+    h = "ab" * 10
+
+    def run_publish(self, body: str, login: str = "github-actions[bot]") -> list[tuple[str, str, object]]:
+        calls: list[tuple[str, str, object]] = []
+        comments = [{"id": 5, "body": body, "user": {"login": login, "type": "Bot"}}]
+
+        def api(method: str, url: str, b: object = None) -> object:
+            calls.append((method, url, b))
+            return comments if method == "GET" else {}
+
+        announce.publish(api, self.base, 7)
+        return calls
+
+    def test_merged_becomes_published_with_text_unchanged(self) -> None:
+        body = announce.queued_body("statement", 7, self.h, None, stage="merged")
+        patches = [c for c in self.run_publish(body) if c[0] == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        new = str(patches[0][2]["body"])  # type: ignore[index]
+        stage = announce.parse_stage(new)
+        assert stage is not None
+        self.assertEqual((stage["stage"], stage["pr"], stage["hash"]), ("published", 7, self.h))
+        strip = announce._STAGE_RE.sub("", new)
+        self.assertEqual(strip, announce._STAGE_RE.sub("", body))
+
+    def test_only_moves_forward_from_merged(self) -> None:
+        for stage in ("checks", "failed", "held", "accepted", "queued", "published"):
+            body = announce.queued_body("statement", 7, self.h, None, stage=stage)
+            self.assertFalse([c for c in self.run_publish(body) if c[0] != "GET"], stage)
+
+    def test_never_touches_a_users_comment_or_posts_one(self) -> None:
+        body = announce.queued_body("statement", 7, self.h, None, stage="merged")
+        self.assertFalse([c for c in self.run_publish(body, "mallory") if c[0] != "GET"])
+
+    def test_cli_rejects_bad_pr_numbers(self) -> None:
+        for bad in (["published"], ["published", "0"], ["published", "7x"], ["nope", "7"]):
+            self.assertEqual(announce.main(bad), 2, bad)
+
+
 class LedgerGlueTests(unittest.TestCase):
     def test_build_announce_updates_only_new_merges(self) -> None:
         import tempfile
@@ -144,6 +184,57 @@ class LedgerGlueTests(unittest.TestCase):
                 ("POST", "https://api.github.com/repos/o/r/issues/2/comments"),
             ],
         )
+
+
+class StageTests(unittest.TestCase):
+    """A hidden machine-readable line the live /pr/<n> page polls."""
+
+    def test_every_body_carries_one_stage_line(self) -> None:
+        bodies = {
+            "checks": announce.checks_body(7),
+            "failed": announce.failed_body(7),
+            "held": announce.held_body(7),
+            "queued": announce.queued_body("proof", 7, S, A1),
+            "merged": announce.merged_body(ENTRIES[1], ENTRIES, INFO),
+        }
+        for stage, body in bodies.items():
+            with self.subTest(stage=stage):
+                got = announce.parse_stage(body)
+                assert got is not None
+                self.assertEqual(got["v"], 1)
+                self.assertEqual(got["stage"], stage)
+                self.assertRegex(str(got["at"]), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+                self.assertEqual(body.count("arginf-stage:"), 1)
+                self.assertTrue(body.startswith(announce.MARKER))
+        merged = announce.parse_stage(bodies["merged"])
+        assert merged is not None
+        self.assertEqual((merged["pr"], merged["hash"], merged["attempt"]), (2, S, A1))
+        queued = announce.parse_stage(bodies["queued"])
+        assert queued is not None
+        self.assertEqual((queued["hash"], queued["attempt"]), (S, A1))
+
+    def test_stage_line_is_strict(self) -> None:
+        with self.assertRaises(ValueError):
+            announce.stage_line("other", 1)
+        with self.assertRaises(ValueError):
+            announce.stage_line("queued", 1, h="not hex")
+        with self.assertRaises(ValueError):
+            announce.stage_line("queued", 0)
+        self.assertIsNone(announce.parse_stage("no stage here"))
+        self.assertIsNone(announce.parse_stage("<!-- arginf-stage: {bad json} -->"))
+
+    def test_with_stage_rewrites_only_the_stage(self) -> None:
+        body = announce.merged_body(ENTRIES[1], ENTRIES, INFO)
+        pub = announce.with_stage(body, "published")
+        got = announce.parse_stage(pub)
+        assert got is not None
+        self.assertEqual((got["stage"], got["pr"], got["hash"]), ("published", 2, S))
+        self.assertEqual(pub.split("-->", 2)[2], body.split("-->", 2)[2])  # visible text unchanged
+
+    def test_no_pr_text_in_stage_or_bodies(self) -> None:
+        # Only fixed strings, numbers and validated hashes ever reach a comment.
+        for body in (announce.checks_body(7), announce.held_body(7), announce.failed_body(7)):
+            self.assertNotIn("Theorems/", body)
 
 
 if __name__ == "__main__":
